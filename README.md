@@ -4,6 +4,29 @@ Signed [OpenZiti](https://openziti.io) packages for OpenWrt 25.12, installable w
 
 The upstream [ziti-openwrt](https://github.com/openziti/ziti-openwrt) project publishes `opkg` packages for OpenWrt 23.05. This repository builds the same software for the `apk` package manager used since OpenWrt 25.12.
 
+## Why this project exists
+
+OpenWrt 25.12 replaced `opkg` with `apk`, and no ready-made OpenZiti packages exist for it. Without them you need to set up the OpenWrt SDK, patch the sources, and repeat that for every release.
+
+This project solves that:
+
+- builds the packages for every 25.12.x release and publishes them as a signed feed, so installing and updating take one `apk` command;
+- fixes what stops the upstream packages from working on a clean 25.12 system: the libuv version, the missing `curl` dependency, and the `opkg` calls in the web interface;
+- adds an optional package that configures the firewall for a LAN gateway;
+- tests every release before publishing.
+
+## What OpenZiti does on a router
+
+[OpenZiti](https://openziti.io) is a zero-trust overlay network: access goes to named services rather than to a network, each device has its own cryptographic identity, and policies on your controller decide who may reach what. Connections are outbound, so the router needs no open inbound ports or public IP address.
+
+Running the tunneler on a router gives you:
+
+- **Access for devices that cannot run a tunneler.** Printers, TVs, phones, and guests behind the router reach Ziti services without any software of their own.
+- **All LAN traffic through a remote exit.** A travel router can send everything through an exit at home, so clients appear to be at that location.
+- **An exit or entry point into a network.** The router can publish services from its own LAN to the overlay, again without opening ports.
+
+OpenZiti carries TCP and UDP, not ICMP, so `ping` does not work through the tunnel. The tunneler runs in user space, so expect lower throughput than a kernel VPN.
+
 ## Packages
 
 | Package | Purpose | When to install |
@@ -27,23 +50,58 @@ Only official OpenWrt firmware is supported. Vendor firmware has different kerne
 |---|---|---|---|
 | `aarch64_cortex-a53` | 25.12.0 to 25.12.6 | Yes | Yes, in an `aarch64_generic` image |
 
-Devices tested on real hardware:
+Use the latest 25.12.x: older releases are available for existing installations, but newer ones carry security fixes.
 
-| Device | OpenWrt | Result |
-|---|---|---|
-| Cudy WR3000P v1 | 25.12.6 | Not yet tested |
+### Router compatibility
 
-Use the latest 25.12.x: older releases are available for existing installations, but newer ones carry security fixes. A matching architecture does not prove that a specific device works, because kernel modules and hardware offload differ between targets.
+These routers have official OpenWrt 25.12.6 images on the `mediatek/filogic` target, the target these packages are built on. The list is not complete: check [the OpenWrt firmware selector](https://firmware-selector.openwrt.org/) for your model. Hardware figures come from secondary sources and may differ between revisions, so check your unit.
+
+| Router | SoC | RAM | Tested on a live router |
+|---|---|---|---|
+| Cudy WR3000P v1 | MT7981B | 512 MB | Not yet |
+| Cudy TR3000 v1 | MT7981B | 512 MB | Not yet; same SoC and RAM as the WR3000P |
+| GL.iNet GL-MT3000 | MT7981B | 512 MB | Not yet; same SoC and RAM as the WR3000P |
+| OpenWrt One | MT7981B | 1 GB | Not yet |
+| Cudy WR3000E v1 | MT7981B | 256 MB | Not yet |
+| Cudy WR3000H v1 | MT7981B | 256 MB | Not yet |
+| ASUS TUF-AX4200 | MT7986 | 512 MB | Not yet |
+| ASUS RT-AX59U | MT7986 | 512 MB | Not yet |
+| Banana Pi BPI-R3 | MT7986 | 2 GB | Not yet |
+| Banana Pi BPI-R4 | MT7988 | 4 GB | Not yet |
+
+GL.iNet's own firmware is not supported, even on these models: use official OpenWrt. Other targets with the `aarch64_cortex-a53` architecture may work but have not been tried. A matching architecture does not prove that a specific device works, because kernel modules and hardware offload differ between targets.
 
 ## Install
 
-The official OpenWrt repositories must stay enabled, because they supply the dependencies. Paste this over SSH:
+The official OpenWrt repositories must stay enabled, because they supply the dependencies.
+
+With [`install.sh`](install.sh), if `curl` is installed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
+```
+
+OpenWrt does not ship `curl` by default. `uclient-fetch` does the same job:
+
+```sh
+uclient-fetch -q -O - https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
+```
+
+This installs `ziti-edge-tunnel`. To choose the packages, pass them as arguments:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh -s -- ziti-edge-tunnel openwrt-ziti-gateway luci-app-ziti
+```
+
+Piping to `sh` runs whatever the URL serves, so read the script first if you prefer.
+
+Or paste the same steps over SSH:
 
 ```sh
 (
   set -e
   . /etc/openwrt_release
-  ARCH=$(cat /etc/apk/arch)
+  ARCH=$(head -n 1 /etc/apk/arch)
   FEED=https://pipzic.github.io/openwrt-ziti-stack
   REPO="$FEED/$DISTRIB_RELEASE/$ARCH/packages.adb"
   uclient-fetch -q -O /dev/null "$REPO"          # stops here on an unsupported release or architecture

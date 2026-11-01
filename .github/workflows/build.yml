@@ -3,7 +3,7 @@ name: build
 on:
   push:
     branches: [master]
-    paths-ignore: ['**.md', 'LICENSE', 'NOTICE']
+    paths-ignore: ['**.md', 'LICENSE', 'NOTICE', 'install.sh']
   workflow_dispatch:
 
 permissions: {}
