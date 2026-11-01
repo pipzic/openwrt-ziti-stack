@@ -12,7 +12,6 @@ This project solves that:
 
 - builds the packages for every 25.12.x release and publishes them as a signed feed, so installing and updating take one `apk` command;
 - fixes what stops the upstream packages from working on a clean 25.12 system: the libuv version, the missing `curl` dependency, and the `opkg` calls in the web interface;
-- adds an optional package that configures the firewall for a LAN gateway;
 - tests every release before publishing.
 
 ## What OpenZiti does on a router
@@ -33,13 +32,12 @@ OpenZiti carries TCP and UDP, not ICMP, so `ping` does not work through the tunn
 |---|---|---|
 | `ziti-edge-tunnel` | The tunneler, plus its boot guard and watchdog | Always |
 | `llhttp9` | HTTP parser library | Pulled in automatically |
-| `openwrt-ziti-gateway` | Routes LAN traffic into the tunnel | Only if LAN clients should use Ziti |
-| `luci-app-ziti` | Web interface under Services > OpenZiti | Optional |
+| `luci-app-ziti` | Web interface under Services > OpenZiti | Optional; needed for the tunnel modes below |
 
 The device's role is decided by the service policies on your Ziti controller, not by the packages:
 
 - **Exit point:** `ziti-edge-tunnel` and an identity with a Bind policy.
-- **LAN gateway:** add `openwrt-ziti-gateway` and use an identity with a Dial policy.
+- **LAN gateway:** add `luci-app-ziti` and use an identity with a Dial policy.
 - **Both:** the same packages, with an identity that has both policies. If the watchdog detects a dead exit in full-tunnel mode it stops the whole tunneler, which also stops this device's exit role.
 
 ## Supported systems
@@ -73,24 +71,24 @@ GL.iNet's own firmware is not supported, even on these models: use official Open
 
 ## Install
 
-The official OpenWrt repositories must stay enabled, because they supply the dependencies.
+The official OpenWrt repositories must stay enabled, because they supply the dependencies. `ziti-edge-tunnel` and its dependencies take about 9 MB of unpacked disk space, so check the free space on your router first.
 
-With [`install.sh`](install.sh), if `curl` is installed:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
-```
-
-OpenWrt does not ship `curl` by default. `uclient-fetch` does the same job:
+With [`install.sh`](install.sh):
 
 ```sh
 uclient-fetch -q -O - https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
 ```
 
+If `curl` is installed, this does the same job (OpenWrt does not ship it by default):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
+```
+
 This installs `ziti-edge-tunnel`. To choose the packages, pass them as arguments:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh -s -- ziti-edge-tunnel openwrt-ziti-gateway luci-app-ziti
+uclient-fetch -q -O - https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh -s -- ziti-edge-tunnel luci-app-ziti
 ```
 
 Piping to `sh` runs whatever the URL serves, so read the script first if you prefer.
@@ -111,13 +109,15 @@ Or paste the same steps over SSH:
   mv /tmp/openwrt-ziti-stack.pem /etc/apk/keys/
   echo "$REPO" > /etc/apk/repositories.d/openwrt-ziti-stack.list
   apk update
-  apk add ziti-edge-tunnel                       # optional: openwrt-ziti-gateway luci-app-ziti
+  apk add ziti-edge-tunnel                       # optional: luci-app-ziti
 )
 ```
 
 ## Enroll an identity
 
-Through the web interface (Services > OpenZiti > Identities), or on the command line:
+Create an identity on your Ziti controller and download its enrollment token (a `.jwt` file).
+
+Then use the web interface (Services > OpenZiti > Identities, needs `luci-app-ziti`), or copy the token to `/tmp/device.jwt` on the router and run:
 
 ```sh
 ziti-edge-tunnel enroll --jwt /tmp/device.jwt --identity /etc/ziti/identities/device.json
@@ -126,23 +126,23 @@ rm /tmp/device.jwt
 /etc/init.d/ziti-edge-tunnel restart
 ```
 
-## The gateway package
+## Send LAN traffic through a remote exit
 
-Installing `openwrt-ziti-gateway` does the following:
+Use Services > OpenZiti > Tunnel Mode. Choose the identity under one mode only: if the same identity is selected for both, the tunnel stops.
 
-- creates a firewall zone on `ziti0` and a `lan -> ziti` forwarding, unless a compatible zone already exists;
-- turns off software and hardware flow offload, which could let forwarded traffic bypass the tunnel. Routing throughput drops as a result;
-- saves the original offload values in `/etc/config/openwrt_ziti_gateway`.
+- **Split:** LAN clients reach Ziti services through the tunnel, and everything else goes directly to the internet.
+- **Full:** all LAN traffic goes through the tunnel. Direct `lan -> wan` is removed, and the watchdog restores it if the exit stops carrying data.
 
-It does not touch `lan -> wan` forwarding or DNS. Removing the package deletes its own firewall sections and restores the offload values.
+For full mode, the service must intercept `0.0.0.0/1` and `128.0.0.0/1`. An intercept of `0.0.0.0/0` does not work: the tunneler cannot add a second default route, so LAN clients lose internet.
 
-If `ziti.main.tunnel_mode` is set, the web interface manages the tunnel, and removing the package leaves the firewall unchanged. It prints the commands for removing the settings by hand. In `full` mode the web interface also removes `lan -> wan`, so LAN clients have no direct internet until you add it back.
-
-If setup fails, `apk` reports the error and the previous firewall configuration is restored, but the package stays installed and is marked as broken. Fix the cause, then run:
+## Update the packages
 
 ```sh
-apk fix openwrt-ziti-gateway
+apk update
+apk upgrade
 ```
+
+`apk upgrade` updates every installed package, including those from the official repositories.
 
 ## After a system upgrade
 
@@ -153,7 +153,7 @@ Attended Sysupgrade and `owut` do not carry packages from third-party feeds into
 ## Remove
 
 ```sh
-apk del luci-app-ziti openwrt-ziti-gateway ziti-edge-tunnel
+apk del luci-app-ziti ziti-edge-tunnel
 rm /etc/apk/repositories.d/openwrt-ziti-stack.list /etc/apk/keys/openwrt-ziti-stack.pem
 ```
 
@@ -163,7 +163,6 @@ rm /etc/apk/repositories.d/openwrt-ziti-stack.list /etc/apk/keys/openwrt-ziti-st
 - `ziti-edge-tunnel` 1.18.7, with a guard for libuv older than 1.50, because OpenWrt 25.12 ships 1.48.
 - `ziti-edge-tunnel` depends on `curl`. The boot guard needs it, and without it the watchdog treats a healthy full tunnel as dead.
 - The web interface's update check uses `apk`.
-- `openwrt-ziti-gateway` is new.
 
 The patches are in [`patches/`](patches/).
 
@@ -174,33 +173,6 @@ Each package index is signed with this project's key, and `apk` checks that sign
 A valid signature only shows that this repository published the package. It does not show that the code is safe. Upstream sources are pinned by commit and hash, except for `ziti-sdk-c`, which the tunneler's build fetches by tag.
 
 GitHub Actions builds every package from this repository with the OpenWrt SDK, verified against OpenWrt's signed checksums. See [the workflow](.github/workflows/build.yml).
-
-## Maintenance
-
-**Add an OpenWrt release:** add it to `RELEASES` in [`versions.env`](versions.env).
-
-**Change a patch, the gateway, or a dependency:** bump `PACKAGE_RELEASE` in `versions.env`, otherwise `apk` will not offer the update.
-
-**Build locally:** this needs Docker. The SDK runs only on x86-64, so other hosts use emulation.
-
-```sh
-docker build --platform linux/amd64 --tag openwrt-ziti-stack-builder:amd64 .
-mkdir -p out
-docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" --env HOME=/tmp \
-  --volume "$PWD/out:/out" openwrt-ziti-stack-builder:amd64 \
-  /opt/openwrt-ziti-stack/scripts/build.sh 25.12.6
-```
-
-**Set up publishing in a fork:**
-
-1. Create a signing key and replace the public key:
-   ```sh
-   openssl ecparam -name prime256v1 -genkey -noout -out signing-key.pem
-   openssl ec -in signing-key.pem -pubout -out keys/openwrt-ziti-stack.pem
-   ```
-2. In the repository settings, set Pages > Source to GitHub Actions.
-3. Add the contents of `signing-key.pem` as the secret `APK_SIGNING_KEY` in the `github-pages` environment.
-4. Update the feed URL and the key's SHA-256 in this README.
 
 ## License
 

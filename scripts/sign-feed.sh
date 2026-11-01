@@ -10,7 +10,7 @@ feed="${1:?usage: sign-feed.sh <feed-dir>}"
 # shellcheck source=scripts/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-PACKAGES='llhttp9 luci-app-ziti openwrt-ziti-gateway ziti-edge-tunnel'
+PACKAGES='llhttp9 luci-app-ziti ziti-edge-tunnel'
 PUBLIC_KEY="$ROOT/keys/openwrt-ziti-stack.pem"
 
 WORK_DIR="$(mktemp -d /tmp/openwrt-ziti-sign.XXXXXX)"
@@ -37,7 +37,7 @@ for release in $RELEASES; do
   dir="$feed/$release/$ARCH"
   [[ "$(find "$feed/$release" -mindepth 1 -maxdepth 1)" == "$dir" ]] || die "unexpected content in $feed/$release"
   [[ "$(find "$dir" -mindepth 1 ! -name '*.apk' | wc -l)" == 0 ]] || die "non-package files in $dir"
-  [[ "$(find "$dir" -mindepth 1 -name '*.apk' | wc -l)" == 4 ]] || die "expected 4 packages in $dir"
+  [[ "$(find "$dir" -mindepth 1 -name '*.apk' | wc -l)" == 3 ]] || die "expected 3 packages in $dir"
 
   # --keys-dir is relative to --root. An empty directory proves nothing is trusted here.
   mkdir -p "$WORK_DIR/empty/keys"

@@ -123,23 +123,19 @@ set_makefile_value() {
   grep -qx "${variable}:=${value}" "$makefile" || die "could not set $variable in $makefile"
 }
 
-STACK_FEED="$WORK_DIR/packages"
-cp -R "$ROOT/packages" "$STACK_FEED"
 set_makefile_value "$FEED_DIR/package/ziti-edge-tunnel/Makefile" PKG_VERSION "$ZET_VERSION"
 set_makefile_value "$FEED_DIR/package/ziti-edge-tunnel/Makefile" PKG_HASH "$ZET_SHA256"
 set_makefile_value "$FEED_DIR/package/ziti-edge-tunnel/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
 set_makefile_value "$FEED_DIR/package/luci-app-ziti/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
-set_makefile_value "$STACK_FEED/openwrt-ziti-gateway/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
 
 # Feed names accept only [A-Za-z0-9_].
-printf '\nsrc-link ziti_openwrt %s\nsrc-link ziti_stack %s\n' "$FEED_DIR" "$STACK_FEED" \
-  >> "$SDK_DIR/feeds.conf.default"
+printf '\nsrc-link ziti_openwrt %s\n' "$FEED_DIR" >> "$SDK_DIR/feeds.conf.default"
 
 (
   cd "$SDK_DIR"
   # feeds.conf.default of the verified SDK pins the base and packages revisions.
-  ./scripts/feeds update base packages ziti_openwrt ziti_stack
-  ./scripts/feeds install ziti-edge-tunnel llhttp stc luci-app-ziti openwrt-ziti-gateway
+  ./scripts/feeds update base packages ziti_openwrt
+  ./scripts/feeds install ziti-edge-tunnel llhttp stc luci-app-ziti
 
   strip_sdk_release_package_snapshot
 
@@ -153,20 +149,18 @@ printf '\nsrc-link ziti_openwrt %s\nsrc-link ziti_stack %s\n' "$FEED_DIR" "$STAC
     '# CONFIG_ALL_NONSHARED is not set' \
     'CONFIG_PACKAGE_ziti-edge-tunnel=m' \
     'CONFIG_PACKAGE_luci-app-ziti=m' \
-    'CONFIG_PACKAGE_openwrt-ziti-gateway=m' \
     > .config
   make defconfig
 
   grep -qx "CONFIG_TARGET_ARCH_PACKAGES=\"$ARCH\"" .config \
     || die "SDK architecture does not match $ARCH"
-  for package in llhttp ziti-edge-tunnel luci-app-ziti openwrt-ziti-gateway; do
+  for package in llhttp ziti-edge-tunnel luci-app-ziti; do
     grep -Eq "^CONFIG_PACKAGE_${package}=[my]$" .config || die "$package is not selected"
   done
 
   make -j"$BUILD_JOBS" \
     package/feeds/ziti_openwrt/ziti-edge-tunnel/compile \
     package/feeds/ziti_openwrt/luci-app-ziti/compile \
-    package/feeds/ziti_stack/openwrt-ziti-gateway/compile \
     V=s
 )
 
@@ -176,8 +170,7 @@ mkdir -p "$RELEASE_DIR"
 for pattern in \
   "ziti-edge-tunnel-${ZET_VERSION}-r${PACKAGE_RELEASE}.apk" \
   'llhttp9-*.apk' \
-  "luci-app-ziti-*-r${PACKAGE_RELEASE}.apk" \
-  "openwrt-ziti-gateway-*-r${PACKAGE_RELEASE}.apk"; do
+  "luci-app-ziti-*-r${PACKAGE_RELEASE}.apk"; do
   cp "$(find_package "$pattern")" "$RELEASE_DIR/"
 done
 chmod 0644 "$RELEASE_DIR"/*.apk

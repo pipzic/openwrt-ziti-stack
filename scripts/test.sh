@@ -19,7 +19,7 @@ docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp --volume "$work:/out"
   _ "$release"
 docker import --platform linux/arm64 "$work"/openwrt-*-rootfs.tar.gz "$IMAGE" >/dev/null
 
-for test_case in install gateway gateway-fail wrong-key tampered; do
+for test_case in install wrong-key tampered; do
   printf '=== %s: %s\n' "$release" "$test_case"
   docker run --rm --platform linux/arm64 \
     --volume "$feed:/feed:ro" --volume "$ROOT/scripts:/test:ro" \

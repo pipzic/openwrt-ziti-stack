@@ -2,8 +2,8 @@
 # shellcheck shell=dash
 # Add the openwrt-ziti-stack feed and install its packages on OpenWrt.
 #   install.sh [package...]
-# Without arguments it installs ziti-edge-tunnel only. Optional packages:
-# openwrt-ziti-gateway, luci-app-ziti.
+# Without arguments it installs ziti-edge-tunnel only. Optional package:
+# luci-app-ziti.
 set -eu
 
 FEED=https://pipzic.github.io/openwrt-ziti-stack
