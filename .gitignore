@@ -1,0 +1,6 @@
+/out/
+/feed/
+/cache/
+*.key
+*signing-key*
+.DS_Store
