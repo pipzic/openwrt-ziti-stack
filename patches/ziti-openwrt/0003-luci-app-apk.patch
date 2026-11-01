@@ -1,0 +1,147 @@
+diff --git a/package/luci-app-ziti/Makefile b/package/luci-app-ziti/Makefile
+index 42e2b5c..205290c 100644
+--- a/package/luci-app-ziti/Makefile
++++ b/package/luci-app-ziti/Makefile
+@@ -18,7 +18,7 @@ PKG_LICENSE:=Apache-2.0
+ PKG_MAINTAINER:=openwrt-openziti contributors
+ 
+ LUCI_TITLE:=LuCI support for OpenZiti (ziti-edge-tunnel)
+-LUCI_DEPENDS:=+luci-base +ziti-edge-tunnel
++LUCI_DEPENDS:=+ziti-edge-tunnel
+ LUCI_PKGARCH:=all
+ 
+ # If running inside the official LuCI feed, ../../luci.mk exists and does the
+@@ -39,6 +39,8 @@ define Package/$(PKG_NAME)
+   SUBMENU:=3. Applications
+   TITLE:=$(LUCI_TITLE)
+   DEPENDS:=$(LUCI_DEPENDS)
++  # Runtime only: the view files need no LuCI build, so the SDK must not compile it.
++  EXTRA_DEPENDS:=luci-base (>=0)
+   PKGARCH:=$(LUCI_PKGARCH)
+   URL:=https://openziti.io
+ endef
+@@ -77,6 +79,15 @@ define Package/$(PKG_NAME)/conffiles
+ /etc/config/ziti
+ endef
+ 
++# rpcd only scans its plugin directory at startup; SIGHUP makes it load the new backend.
++define Package/$(PKG_NAME)/postinst
++#!/bin/sh
++[ -n "$${IPKG_INSTROOT}" ] && exit 0
++rm -rf /tmp/luci-modulecache
++killall -HUP rpcd 2>/dev/null
++exit 0
++endef
++
+ $(eval $(call BuildPackage,$(PKG_NAME)))
+ 
+ endif
+diff --git a/package/luci-app-ziti/htdocs/luci-static/resources/view/ziti/settings.js b/package/luci-app-ziti/htdocs/luci-static/resources/view/ziti/settings.js
+index e328f1b..1dbc596 100644
+--- a/package/luci-app-ziti/htdocs/luci-static/resources/view/ziti/settings.js
++++ b/package/luci-app-ziti/htdocs/luci-static/resources/view/ziti/settings.js
+@@ -120,6 +120,11 @@ return view.extend({
+ 			return callCheck().then(function (r) {
+ 				ui.hideModal();
+ 				r = r || {};
++				if (r.error) {
++					dom.content(results, E('div', { 'class': 'alert-message warning' },
++						_('Check failed: ') + (r.error.message || r.error.code)));
++					return;
++				}
+ 				var upgradable = !!r.upgradable;
+ 				var kids = [
+ 					E('div', {}, [ _('Source feed: '), E('code', {}, r.feed || _('(none configured)')) ]),
+diff --git a/package/luci-app-ziti/root/usr/libexec/rpcd/ziti b/package/luci-app-ziti/root/usr/libexec/rpcd/ziti
+index 6c439d6..6dde2be 100755
+--- a/package/luci-app-ziti/root/usr/libexec/rpcd/ziti
++++ b/package/luci-app-ziti/root/usr/libexec/rpcd/ziti
+@@ -376,60 +376,53 @@ method_set_tunnel_mode() {
+ 	printf '{"ok":true,"mode":"%s"}\n' "$mode"
+ }
+ 
+-# ---------- updates (signed, GitHub-only) ----------
++# ---------- updates (signed feed, verified by apk) ----------
+ 
+ _oz_feed_url() {
+-	awk '/^src\/gz[[:space:]]+openziti[[:space:]]/ {print $3; exit}' /etc/opkg/customfeeds.conf 2>/dev/null
++	sed -n '/^[^#]/{p;q;}' /etc/apk/repositories.d/openwrt-ziti-stack.list 2>/dev/null
+ }
+ 
+-# Verify the openziti feed's Packages index signature (usign) against the
+-# imported keys. Returns 0 if any imported key verifies it. This proves the
+-# feed content is signed by the project WITHOUT enabling opkg's global
+-# check_signature (which breaks GL.iNet's own unsigned feed).
+-_oz_verify_feed() {
+-	local url tmp k rc=1
+-	url=$(_oz_feed_url); [ -n "$url" ] || return 1
+-	tmp=$(mktemp -d) || return 1
+-	if curl -fsSL "$url/Packages" -o "$tmp/Packages" 2>/dev/null &&
+-	   curl -fsSL "$url/Packages.sig" -o "$tmp/Packages.sig" 2>/dev/null; then
+-		for k in /etc/opkg/keys/*; do
+-			[ -f "$k" ] || continue
+-			if usign -V -p "$k" -m "$tmp/Packages" -x "$tmp/Packages.sig" >/dev/null 2>&1; then
+-				rc=0; break
+-			fi
+-		done
+-	fi
+-	rm -rf "$tmp"
+-	return $rc
++# Print the version from `apk list` lines such as
++# "ziti-edge-tunnel-1.18.7-r5 aarch64_cortex-a53 {...} (...) [installed]".
++_oz_version() {
++	sed -n 's/^ziti-edge-tunnel-\([^ ]*\) .*/\1/p' | head -n 1
++}
++
++# apk verifies the index signature against /etc/apk/keys itself, but an untrusted
++# index is only a warning: the update still exits 0 and the index is ignored.
++_oz_update_feed() {
++	local out
++	out=$(apk update 2>&1) || return 1
++	case "$out" in *UNTRUSTED*) return 1 ;; esac
+ }
+ 
+ method_check_update() {
+-	local installed candidate feed verified upgradable
+-	opkg update >/dev/null 2>&1
+-	installed=$(opkg list-installed ziti-edge-tunnel 2>/dev/null | awk '{print $3; exit}')
+-	candidate=$(opkg list ziti-edge-tunnel 2>/dev/null | awk '{print $3; exit}')
++	local installed candidate feed upgradable
+ 	feed=$(_oz_feed_url)
+-	# opkg decides if the feed actually has a NEWER version (avoids offering a downgrade).
+-	if opkg list-upgradable 2>/dev/null | grep -q '^ziti-edge-tunnel '; then upgradable=true; else upgradable=false; fi
+-	if _oz_verify_feed; then verified=true; else verified=false; fi
+-	printf '{"installed":"%s","candidate":"%s","feed":"%s","verified":%s,"upgradable":%s}\n' \
+-		"$installed" "$candidate" "$feed" "$verified" "$upgradable"
++	if ! _oz_update_feed; then
++		emit_error "update_failed" "apk update failed; check the network and the feed signing key"
++		return
++	fi
++	installed=$(apk list -I ziti-edge-tunnel 2>/dev/null | _oz_version)
++	candidate=$(apk list ziti-edge-tunnel 2>/dev/null | _oz_version)
++	if apk list -u ziti-edge-tunnel 2>/dev/null | grep -q '^ziti-edge-tunnel-'; then upgradable=true; else upgradable=false; fi
++	printf '{"installed":"%s","candidate":"%s","feed":"%s","verified":true,"upgradable":%s}\n' \
++		"$installed" "$candidate" "$feed" "$upgradable"
+ }
+ 
+ method_upgrade_zet() {
+-	opkg update >/dev/null 2>&1
+-	if ! _oz_verify_feed; then
+-		emit_error "unverified" "openziti feed signature did not verify; refusing to upgrade"
++	if ! _oz_update_feed; then
++		emit_error "update_failed" "apk update failed; check the network and the feed signing key"
+ 		return
+ 	fi
+ 	local out rc v
+-	out=$(opkg install ziti-edge-tunnel 2>&1); rc=$?
++	out=$(apk add --upgrade ziti-edge-tunnel 2>&1); rc=$?
+ 	if [ $rc -ne 0 ]; then
+ 		emit_error "install_failed" "$(printf '%s' "$out" | json_escape)"
+ 		return
+ 	fi
+ 	/etc/init.d/ziti-edge-tunnel restart >/dev/null 2>&1
+-	v=$(opkg list-installed ziti-edge-tunnel 2>/dev/null | awk '{print $3; exit}')
++	v=$(apk list -I ziti-edge-tunnel 2>/dev/null | _oz_version)
+ 	printf '{"ok":true,"version":"%s"}\n' "$v"
+ }
+ 

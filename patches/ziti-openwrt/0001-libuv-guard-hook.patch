@@ -1,0 +1,18 @@
+--- a/package/ziti-edge-tunnel/Makefile
++++ b/package/ziti-edge-tunnel/Makefile
+@@ -87,6 +87,15 @@ define Build/Configure
+ 	$(CP) ./files/cmake-shims/unofficial-sodium/unofficial-sodiumConfig.cmake \
+ 		$(PKG_BUILD_DIR)/.cmake-shims/unofficial-sodium/
+ 	$(call Build/Configure/Default)
++	test -f $(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c
++	grep -Fxc '    uv_thread_setname("zitilib-daemon");' $(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c | grep -qx '1'
++	patch --batch --forward \
++		-d $(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src -p1 \
++		< /opt/openwrt-ziti-stack/patches/ziti-sdk-c/libuv-before-1.50.patch
++	grep -Fqx '#if UV_VERSION_HEX >= 0x013200' \
++		$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c
++	grep -Fqx '#endif /* libuv >= 1.50.0 */' \
++		$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c
+ endef
+ 
+ # The upstream tree installs the binary as ziti-edge-tunnel under bin/.

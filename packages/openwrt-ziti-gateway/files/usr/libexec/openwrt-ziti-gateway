@@ -1,0 +1,204 @@
+#!/bin/sh
+# shellcheck shell=dash
+# SPDX-License-Identifier: Apache-2.0
+#
+# Routes LAN traffic into the OpenZiti tunnel: a firewall zone on ziti0, a
+# lan -> ziti forwarding, and flow offload turned off so forwarded traffic cannot
+# bypass the TUN device.
+#
+# Ownership: only the sections ziti_gateway_zone and ziti_gateway_lan belong to
+# this script. When ziti.main.tunnel_mode is set, luci-app-ziti manages the tunnel
+# and `disable` changes nothing.
+#
+# The original offload values live in their own UCI file, which survives upgrades
+# and does not depend on the tunneler's configuration. An option missing from the
+# saved section was missing from the firewall.
+
+set -u
+
+NAME=openwrt-ziti-gateway
+FIREWALL=/etc/config/firewall
+STATE_NAME=openwrt_ziti_gateway
+STATE="/etc/config/$STATE_NAME"
+ZONE=ziti_gateway_zone
+FORWARDING=ziti_gateway_lan
+OFFLOAD_OPTIONS="flow_offloading flow_offloading_hw"
+DEFAULTS='firewall.@defaults[0]'
+
+say() {
+	echo "$NAME: $*" >&2
+}
+
+die() {
+	say "$*"
+	exit 1
+}
+
+find_zone() {
+	local section
+	for section in $(uci -q -X show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='$1'$/\1/p"); do
+		if [ "$(uci -q get "firewall.$section")" = zone ]; then
+			echo "$section"
+			return 0
+		fi
+	done
+	return 1
+}
+
+has_forwarding() {
+	local section
+	for section in $(uci -q -X show firewall | sed -n 's/^firewall\.\([^.=]*\)=forwarding$/\1/p'); do
+		[ "$(uci -q get "firewall.$section.src")" = "$1" ] &&
+			[ "$(uci -q get "firewall.$section.dest")" = "$2" ] && return 0
+	done
+	return 1
+}
+
+# The gateway relies on these settings, so a zone that lacks them is not reused.
+zone_is_usable() {
+	uci -q get "firewall.$1.device" | tr ' ' '\n' | grep -qx ziti0 &&
+		[ "$(uci -q get "firewall.$1.masq")" = 1 ] &&
+		[ "$(uci -q get "firewall.$1.input")" = REJECT ] &&
+		[ "$(uci -q get "firewall.$1.forward")" = REJECT ] &&
+		[ "$(uci -q get "firewall.$1.output")" = ACCEPT ]
+}
+
+state_saved() {
+	[ "$(uci -q get "$STATE_NAME.saved")" = state ]
+}
+
+save_state() {
+	local option value
+	: > "$STATE" || return 1
+	uci set "$STATE_NAME.saved=state" || return 1
+	for option in $OFFLOAD_OPTIONS; do
+		if value="$(uci -q get "$DEFAULTS.$option")"; then
+			uci set "$STATE_NAME.saved.$option=$value" || return 1
+		fi
+	done
+	uci commit "$STATE_NAME"
+}
+
+create_sections() {
+	if ! find_zone ziti >/dev/null; then
+		uci set "firewall.$ZONE=zone" &&
+			uci set "firewall.$ZONE.name=ziti" &&
+			uci add_list "firewall.$ZONE.device=ziti0" &&
+			uci set "firewall.$ZONE.input=REJECT" &&
+			uci set "firewall.$ZONE.output=ACCEPT" &&
+			uci set "firewall.$ZONE.forward=REJECT" &&
+			uci set "firewall.$ZONE.masq=1" &&
+			uci set "firewall.$ZONE.mtu_fix=1" || return 1
+	fi
+	if ! has_forwarding lan ziti; then
+		uci set "firewall.$FORWARDING=forwarding" &&
+			uci set "firewall.$FORWARDING.src=lan" &&
+			uci set "firewall.$FORWARDING.dest=ziti" || return 1
+	fi
+}
+
+disable_offload() {
+	local option
+	for option in $OFFLOAD_OPTIONS; do
+		uci set "$DEFAULTS.$option=0" || return 1
+	done
+}
+
+restore_offload() {
+	local option value
+	state_saved || return 0
+	for option in $OFFLOAD_OPTIONS; do
+		if value="$(uci -q get "$STATE_NAME.saved.$option")"; then
+			uci set "$DEFAULTS.$option=$value" || return 1
+		else
+			uci -q delete "$DEFAULTS.$option"
+		fi
+	done
+}
+
+apply_firewall() {
+	uci commit firewall && fw4 check >/dev/null 2>&1 && /etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+# Back up both files so a failure returns to exactly the state before this call.
+backup() {
+	BACKUP_DIR="$(mktemp -d)" || return 1
+	trap 'rm -rf "$BACKUP_DIR"' EXIT
+	cp "$FIREWALL" "$BACKUP_DIR/firewall" || return 1
+	if [ -e "$STATE" ]; then
+		cp "$STATE" "$BACKUP_DIR/state" || return 1
+	fi
+}
+
+restore_backup() {
+	uci -q revert firewall
+	uci -q revert "$STATE_NAME"
+	cp "$BACKUP_DIR/firewall" "$FIREWALL" || say "could not restore $FIREWALL"
+	if [ -e "$BACKUP_DIR/state" ]; then
+		cp "$BACKUP_DIR/state" "$STATE" || say "could not restore $STATE"
+	else
+		rm -f "$STATE"
+	fi
+	/etc/init.d/firewall reload >/dev/null 2>&1 || say "could not reload the restored firewall"
+}
+
+gateway_enable() {
+	local zone
+	command -v fw4 >/dev/null || die "firewall4 is required"
+	find_zone lan >/dev/null || die "firewall zone 'lan' not found; nothing was changed"
+	if zone="$(find_zone ziti)" && ! zone_is_usable "$zone"; then
+		die "firewall zone 'ziti' exists but lacks device ziti0, masq, or the expected policies; nothing was changed"
+	fi
+
+	backup || die "could not back up the configuration; nothing was changed"
+	if { state_saved || save_state; } && create_sections && disable_offload && apply_firewall; then
+		return 0
+	fi
+	restore_backup
+	die "could not apply the firewall changes; the previous configuration was restored. After fixing the cause, run: apk fix $NAME"
+}
+
+print_manual_cleanup() {
+	cat >&2 <<-EOF
+		$NAME: to remove the gateway settings by hand:
+		  uci -q delete firewall.$ZONE
+		  uci -q delete firewall.$FORWARDING
+		  uci set $DEFAULTS.flow_offloading=<saved value, or delete the option>
+		  uci set $DEFAULTS.flow_offloading_hw=<saved value, or delete the option>
+		  uci commit firewall && fw4 check && /etc/init.d/firewall reload
+		  rm -f $STATE
+		The saved values are in $STATE.
+	EOF
+}
+
+gateway_disable() {
+	local mode
+	mode="$(uci -q get ziti.main.tunnel_mode)" || mode=""
+	if [ -n "$mode" ]; then
+		say "luci-app-ziti manages the tunnel (mode: $mode), so the firewall was left unchanged"
+		[ "$mode" = full ] && say "in full mode LAN clients have no direct internet until lan -> wan forwarding is restored"
+		print_manual_cleanup
+		return 0
+	fi
+
+	[ -e "$FIREWALL" ] || return 0
+	backup || { say "could not back up the configuration; the firewall was left unchanged"; print_manual_cleanup; return 1; }
+	uci -q delete "firewall.$ZONE"
+	uci -q delete "firewall.$FORWARDING"
+	if restore_offload && apply_firewall; then
+		rm -f "$STATE"
+		return 0
+	fi
+
+	# apk removes this script even when it fails, so leave clear instructions behind.
+	restore_backup
+	say "could not remove the firewall settings; the previous configuration was restored"
+	print_manual_cleanup
+	return 1
+}
+
+case "${1:-}" in
+	enable)  gateway_enable ;;
+	disable) gateway_disable ;;
+	*)       echo "usage: $NAME enable|disable" >&2; exit 2 ;;
+esac

@@ -1,0 +1,28 @@
+openwrt-ziti-stack
+Copyright openwrt-ziti-stack contributors
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This project builds and patches third-party software. It does not include their
+source code, apart from the patches in patches/, which are derived works of the
+files they modify and are distributed under the same license as those files.
+
+The published packages contain:
+
+- ziti-openwrt (package recipes, init scripts, LuCI application)
+  https://github.com/openziti/ziti-openwrt
+  Copyright OpenZiti contributors, Apache License 2.0
+
+- ziti-tunnel-sdk-c (ziti-edge-tunnel)
+  https://github.com/openziti/ziti-tunnel-sdk-c
+  Copyright NetFoundry Inc., Apache License 2.0
+
+- ziti-sdk-c
+  https://github.com/openziti/ziti-sdk-c
+  Copyright NetFoundry Inc., Apache License 2.0
+
+- llhttp
+  https://github.com/nodejs/llhttp
+  MIT License
+
+Packages are built with the OpenWrt SDK (https://openwrt.org). This project is
+not affiliated with or endorsed by OpenWrt, OpenZiti, or NetFoundry.

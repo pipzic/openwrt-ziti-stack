@@ -1,0 +1,12 @@
+--- a/library/zitilib/daemon.c
++++ b/library/zitilib/daemon.c
+@@ -113,7 +113,9 @@ void process_on_loop(uv_async_t *async) {
+ 
+ static void looper(void *arg) {
+     (void)arg;
++#if UV_VERSION_HEX >= 0x013200
+     uv_thread_setname("zitilib-daemon");
++#endif /* libuv >= 1.50.0 */
+     uv_loop_t *loop = uv_loop_new();
+     c_with(uv_mutex_lock(&loop_lock), uv_mutex_unlock(&loop_lock)) {
+         ziti_log_init(loop, -1, NULL);
