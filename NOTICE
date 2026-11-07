@@ -2,9 +2,11 @@ openwrt-ziti-stack
 Copyright openwrt-ziti-stack contributors
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
-This project builds and patches third-party software. It does not include their
-source code, apart from the patches in patches/, which are derived works of the
-files they modify and are distributed under the same license as those files.
+The directories under packages/ are derived from ziti-openwrt at commit
+f54a5d76cf41bca7fa9baf2b4b80f7e7cc95dfdb and have been modified. The patch in
+patches/ is a derived work of the file it modifies and is distributed under the
+same license as that file. Other third-party source code is downloaded at build
+time and is not included here.
 
 The published packages contain:
 

@@ -1,0 +1,97 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2026 OpenZiti contributors
+# Apache-2.0
+#
+# procd init for ziti-edge-tunnel. One process loads every identity in
+# /etc/ziti/identities; its config.json there keeps runtime state across reboots.
+# Autostart is the ordinary rc.d link: enable and disable.
+
+START=99
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/ziti-edge-tunnel
+IDENTITY_DIR=/etc/ziti/identities
+# ziti-boot-guard relies on this range, and on .2 being the tunneler's DNS server.
+DNS_RANGE=198.18.0.1/16
+STOP_MARK=/var/run/ziti-stopped
+START_MARK=/var/run/ziti-started
+APPLIED=/var/run/ziti-applied
+
+# Map UCI log_level to ZET --verbose 0..6.
+verbosity_for() {
+	case "$1" in
+		TRACE)   echo 6 ;;
+		VERBOSE) echo 5 ;;
+		DEBUG)   echo 4 ;;
+		WARN)    echo 2 ;;
+		ERROR)   echo 1 ;;
+		*)       echo 3 ;;
+	esac
+}
+
+have_identity() {
+	local f
+	for f in "$IDENTITY_DIR"/*.json; do
+		[ -e "$f" ] || continue
+		[ "$(basename "$f")" = "config.json" ] && continue
+		return 0
+	done
+	return 1
+}
+
+start_service() {
+	local log_level dns_upstream
+	config_load ziti
+	config_get log_level main log_level INFO
+	config_get dns_upstream main dns_upstream 1.1.1.1
+
+	rm -f "$STOP_MARK"
+	date +%s > "$START_MARK"
+	/etc/init.d/ziti-guard start >/dev/null 2>&1
+
+	# ZET exits without an identity, and procd would respawn it forever.
+	if ! have_identity; then
+		logger -t ziti "no enrolled identities under $IDENTITY_DIR; not starting"
+		return 0
+	fi
+
+	procd_open_instance ziti-edge-tunnel
+	procd_set_param command "$PROG" run \
+		--identity-dir "$IDENTITY_DIR" \
+		--dns-ip-range "$DNS_RANGE" \
+		--verbose "$(verbosity_for "$log_level")"
+	case "$dns_upstream" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) procd_append_param command --dns-upstream "$dns_upstream" ;;
+		none) ;;
+		?*) logger -t ziti "ignoring non-IP dns_upstream '$dns_upstream'" ;;
+	esac
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	echo "$dns_upstream" > "$APPLIED"
+}
+
+stop_service() {
+	touch "$STOP_MARK"
+}
+
+# Changed settings must not drop every client. Only the DNS upstream needs a restart;
+# the watchdog rereads its own settings on each check.
+reload_service() {
+	local log_level dns_upstream
+	config_load ziti
+	config_get log_level main log_level INFO
+	config_get dns_upstream main dns_upstream 1.1.1.1
+	if [ "$dns_upstream" != "$(cat "$APPLIED" 2>/dev/null)" ]; then
+		restart
+		return
+	fi
+	"$PROG" set_log_level -l "$log_level" >/dev/null 2>&1
+}
+
+service_triggers() {
+	procd_add_reload_trigger "ziti"
+}

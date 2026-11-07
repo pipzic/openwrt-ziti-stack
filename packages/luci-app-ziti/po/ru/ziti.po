@@ -1,0 +1,413 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ru\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "  Newest in feed: "
+msgstr "  Последняя в репозитории: "
+
+msgid "(none configured)"
+msgstr "(не настроен)"
+
+msgid "A check passes only if the address service sees this public IP address through the tunnel. Not checked by default."
+msgstr "Проверка проходит, только если сервис определения адреса видит этот внешний IP-адрес через туннель. По умолчанию не проверяется."
+
+msgid "Action"
+msgstr "Действие"
+
+msgid "Active"
+msgstr "Активна"
+
+msgid "Additional watchdog settings"
+msgstr "Дополнительные параметры watchdog"
+
+msgid "Addresses checked outside the tunnel, to tell a lost internet connection from a fabric failure. Default: 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222."
+msgstr "Адреса, которые проверяются мимо туннеля, чтобы отличить потерю интернета от сбоя фабрики. По умолчанию - 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222."
+
+msgid "An update is available, but the feed signature did not verify. It cannot be installed."
+msgstr "Доступно обновление, но подпись репозитория не прошла проверку. Установка невозможна."
+
+msgid "Block services on failure"
+msgstr "Блокировать сервисы при сбое"
+
+msgid "Bypass"
+msgstr "Обход"
+
+msgid "Cannot reach the controller named in the token. Check the internet connection."
+msgstr "Не удалось связаться с контроллером, указанным в токене. Проверьте подключение к интернету."
+
+msgid "Cannot read the file"
+msgstr "Не удалось прочитать файл"
+
+msgid "Changes apply without a restart, except the upstream DNS server: clients lose connection briefly when it changes."
+msgstr "Изменения применяются без перезапуска. Исключение: при смене вышестоящего DNS-сервера связь у клиентов ненадолго прервётся."
+
+msgid "Check failed: "
+msgstr "Ошибка проверки: "
+
+msgid "Check for updates"
+msgstr "Проверить обновления"
+
+msgid "Check specific resources"
+msgstr "Проверять конкретные ресурсы"
+
+msgid "Check the exit address"
+msgstr "Проверять адрес выхода"
+
+msgid "Checking"
+msgstr "Проверка"
+
+msgid "Checks"
+msgstr "Проверки"
+
+msgid "Checks the tunnel on its own. While it is broken, traffic goes around the tunnel, and the tunnel keeps trying to reconnect. When it recovers, traffic returns."
+msgstr "Проверяет туннель автоматически. При сбое трафик идёт в обход туннеля, а сам туннель продолжает подключаться. Когда связь восстановится, трафик вернётся."
+
+msgid "Click \"Check for updates\" to query the signed feed."
+msgstr "Нажмите «Проверить обновления», чтобы запросить подписанный репозиторий."
+
+msgid "Connected, but services do not respond, traffic goes around the tunnel"
+msgstr "Связь есть, но сервисы не отвечают, трафик идёт в обход туннеля"
+
+msgid "Contacting the controller and loading the identity..."
+msgstr "Обращение к контроллеру и загрузка identity…"
+
+msgid "Control"
+msgstr "Управление"
+
+msgid "Controller"
+msgstr "Контроллер"
+
+msgid "DNS"
+msgstr "DNS"
+
+msgid "DNS server for names that are not OpenZiti services. If it is reachable only through the overlay, it needs its own service. Enter none to refuse such names. Default: 1.1.1.1."
+msgstr "DNS-сервер для имён, которых нет среди сервисов OpenZiti. Если он доступен только через оверлей, для него нужен отдельный сервис. Введите none, чтобы отклонять такие запросы. По умолчанию - 1.1.1.1."
+
+msgid "Delay before the first check after the tunnel starts, in seconds. Default: 20."
+msgstr "Задержка перед первой проверкой после запуска туннеля в секундах. По умолчанию - 20."
+
+msgid "Delays before each restart while there is no connection or the tunnel is frozen, in seconds. The last one repeats. Default: 60, 300, 900, 1800."
+msgstr "Задержки перед перезапусками при отсутствии связи или зависании туннеля в секундах. Последняя повторяется. По умолчанию - 60, 300, 900, 1800."
+
+msgid "Delete identity %q? This cannot be undone."
+msgstr "Удалить identity %q? Это действие необратимо."
+
+msgid "Disabled"
+msgstr "Отключено"
+
+msgid "Enable watchdog"
+msgstr "Включить watchdog"
+
+msgid "Enabled"
+msgstr "Включено"
+
+msgid "Enroll"
+msgstr "Enroll"
+
+msgid "Enroll a new identity"
+msgstr "Добавить новую identity"
+
+msgid "Enrolling..."
+msgstr "Выполняется Enroll…"
+
+msgid "Enrollment failed. %s"
+msgstr "Не удалось выполнить Enroll. %s"
+
+msgid "Enter a URL that starts with http:// or https://"
+msgstr "Введите URL, начинающийся с http:// или https://"
+
+msgid "Enter an IPv4 address or none"
+msgstr "Введите адрес IPv4 или none"
+
+msgid "Enter an address or name, with a port if needed"
+msgstr "Введите адрес или имя, при необходимости с портом"
+
+msgid "Failed checks in a row before traffic goes around the tunnel. Default: 3."
+msgstr "Число неудачных проверок подряд, после которого трафик идёт в обход туннеля. По умолчанию - 3."
+
+msgid "Failed: %s"
+msgstr "Ошибка: %s"
+
+msgid "Feed: "
+msgstr "Репозиторий: "
+
+msgid "How many random service addresses one check tries. One answer from the fabric is enough, even if the service itself is down. Default: 3."
+msgstr "Сколько случайных адресов из сервисов пробует одна проверка. Достаточно одного ответа фабрики, даже если сам сервис не работает. По умолчанию - 3."
+
+msgid "Identities"
+msgstr "Identity"
+
+msgid "If checked, the addresses and names of services are blocked while the tunnel is broken. If unchecked, they go directly, past OpenZiti."
+msgstr "Если включено, при сбое туннеля адреса и имена сервисов блокируются. Если выключено, они идут напрямую, минуя OpenZiti."
+
+msgid "If set, the watchdog connects only to these instead of the services, and one of them must really answer. Otherwise traffic goes around the tunnel. Format: address or name, with a port if needed. Default port: 443."
+msgstr "Если указаны, watchdog подключается только к ним, и хотя бы один должен действительно ответить, иначе трафик пойдёт в обход туннеля. Формат: адрес или имя, при необходимости с портом. Порт по умолчанию - 443."
+
+msgid "If unchecked, the tunnel is not checked, and its services are unavailable while it is broken."
+msgstr "Если выключено, туннель не проверяется, и при сбое его сервисы недоступны."
+
+msgid "Installed: "
+msgstr "Установлена: "
+
+msgid "Internet and exit"
+msgstr "Интернет и выход"
+
+msgid "JWT file"
+msgstr "Файл JWT"
+
+msgid "Log detail level for the tunnel. Info suits normal use. Default: Info."
+msgstr "Уровень детализации журнала туннеля. Для обычной работы подходит Info. По умолчанию - Info."
+
+msgid "Log level"
+msgstr "Уровень журналирования"
+
+msgid "Main settings"
+msgstr "Основные настройки"
+
+msgid "NOT verified"
+msgstr "НЕ проверена"
+
+msgid "Name"
+msgstr "Имя"
+
+msgid "No connection"
+msgstr "Нет связи"
+
+msgid "No connection to the controller or OpenZiti routers, traffic goes around the tunnel"
+msgstr "Нет связи с контроллером или маршрутизаторами OpenZiti, трафик идёт в обход туннеля"
+
+msgid "No file selected"
+msgstr "Файл не выбран"
+
+msgid "No identities enrolled"
+msgstr "Нет добавленных identity"
+
+msgid "No identities enrolled."
+msgstr "Нет добавленных identity."
+
+msgid "No internet connection"
+msgstr "Нет подключения к интернету"
+
+msgid "No services available, traffic goes around the tunnel"
+msgstr "Нет доступных сервисов, трафик идёт в обход туннеля"
+
+msgid "Not checked: the watchdog is off"
+msgstr "Не проверяется: watchdog выключен"
+
+msgid "One-time .jwt file from your controller. The tunnel restarts to load the identity, so clients lose connection briefly."
+msgstr "Одноразовый файл .jwt с контроллера. Для загрузки identity туннель будет перезапущен, связь у клиентов ненадолго прервётся."
+
+msgid "OpenZiti"
+msgstr "OpenZiti"
+
+msgid "OpenZiti Identities"
+msgstr "Identity OpenZiti"
+
+msgid "OpenZiti Settings"
+msgstr "Настройки OpenZiti"
+
+msgid "OpenZiti Status"
+msgstr "Статус OpenZiti"
+
+msgid "Override DNS check timeout"
+msgstr "Переопределить тайм-аут DNS"
+
+msgid "Override addresses per check"
+msgstr "Переопределить число адресов за проверку"
+
+msgid "Override bypass routing table"
+msgstr "Переопределить таблицу маршрутизации обхода"
+
+msgid "Override bypass rule priority"
+msgstr "Переопределить приоритет правила обхода"
+
+msgid "Override check interval"
+msgstr "Переопределить интервал проверки"
+
+msgid "Override connection timeout"
+msgstr "Переопределить тайм-аут подключения"
+
+msgid "Override exit address service"
+msgstr "Переопределить сервис определения адреса"
+
+msgid "Override exit check timeout"
+msgstr "Переопределить тайм-аут проверки выхода"
+
+msgid "Override failure threshold"
+msgstr "Переопределить порог сбоя"
+
+msgid "Override fallback DNS servers"
+msgstr "Переопределить резервные DNS-серверы"
+
+msgid "Override internet check addresses"
+msgstr "Переопределить адреса проверки интернета"
+
+msgid "Override internet check timeout"
+msgstr "Переопределить тайм-аут проверки интернета"
+
+msgid "Override recovery threshold"
+msgstr "Переопределить порог восстановления"
+
+msgid "Override restart delays"
+msgstr "Переопределить задержки перезапуска"
+
+msgid "Override startup delay"
+msgstr "Переопределить задержку при запуске"
+
+msgid "Override tunnel response timeout"
+msgstr "Переопределить тайм-аут ответа туннеля"
+
+msgid "Override upstream DNS server"
+msgstr "Переопределить вышестоящий DNS-сервер"
+
+msgid "Pause between checks, in seconds. Default: 10."
+msgstr "Пауза между проверками в секундах. По умолчанию - 10."
+
+msgid "Priority of the routing rule that sends traffic to that table. Takes effect the next time traffic goes around the tunnel. Default: 100."
+msgstr "Приоритет правила маршрутизации, направляющего трафик в эту таблицу. Применяется при следующем переходе в обход. По умолчанию - 100."
+
+msgid "Refreshing the feed and verifying its signature..."
+msgstr "Обновление репозитория и проверка подписи…"
+
+msgid "Remove"
+msgstr "Удалить"
+
+msgid "Remove failed: %s"
+msgstr "Ошибка удаления: %s"
+
+msgid "Resilience watchdog"
+msgstr "Resilience watchdog"
+
+msgid "Restart"
+msgstr "Перезапустить"
+
+msgid "Restarts"
+msgstr "Перезапуск"
+
+msgid "Routing table for traffic that goes around the tunnel. Takes effect the next time traffic goes around it. Default: 1890."
+msgstr "Таблица маршрутизации для трафика в обход туннеля. Применяется при следующем переходе в обход. По умолчанию - 1890."
+
+msgid "Select a JWT file."
+msgstr "Выберите файл JWT."
+
+msgid "Select file..."
+msgstr "Выбрать файл…"
+
+msgid "Service"
+msgstr "Служба"
+
+msgid "Service that returns the public IP address, for the exit address check. Default: https://api.ipify.org."
+msgstr "Сервис, возвращающий внешний IP-адрес, для проверки адреса выхода. По умолчанию - https://api.ipify.org."
+
+msgid "Settings"
+msgstr "Настройки"
+
+msgid "Signature: "
+msgstr "Подпись: "
+
+msgid "Start"
+msgstr "Запустить"
+
+msgid "Start at boot"
+msgstr "Запуск при загрузке"
+
+msgid "Starting"
+msgstr "Запускается"
+
+msgid "State"
+msgstr "Состояние"
+
+msgid "Status"
+msgstr "Статус"
+
+msgid "Stop"
+msgstr "Остановить"
+
+msgid "Stopped"
+msgstr "Остановлен"
+
+msgid "Successful checks in a row before traffic returns. Default: 2."
+msgstr "Число успешных проверок подряд, после которого трафик возвращается. По умолчанию - 2."
+
+msgid "The selected file is not an OpenZiti token."
+msgstr "Выбранный файл не является токеном OpenZiti."
+
+msgid "The token is invalid: it has expired, was already used, or was revoked. Create a new one on the controller."
+msgstr "Токен недействителен: истёк срок действия, токен уже использован или отозван. Создайте новый токен на контроллере."
+
+msgid "The tunnel is not responding, restarting"
+msgstr "Туннель не отвечает, выполняется перезапуск"
+
+msgid "Time to wait for a DNS answer, in seconds. Default: 5."
+msgstr "Время ожидания ответа DNS в секундах. По умолчанию - 5."
+
+msgid "Time to wait for a connection to one address, in seconds. The fabric reports a failed connection after about 10 seconds, so the minimum is 11. Default: 12."
+msgstr "Время ожидания подключения к одному адресу в секундах. Фабрика сообщает о неудачном подключении примерно через 10 секунд, поэтому минимум - 11. По умолчанию - 12."
+
+msgid "Time to wait for one internet check address, in seconds. Default: 4."
+msgstr "Время ожидания ответа от одного адреса проверки интернета в секундах. По умолчанию - 4."
+
+msgid "Time to wait for the exit address service, in seconds. Default: 8."
+msgstr "Время ожидания ответа сервиса определения адреса в секундах. По умолчанию - 8."
+
+msgid "Time to wait for the tunnel to report its state, in seconds. No answer means it is frozen. Default: 4."
+msgstr "Время ожидания ответа туннеля о состоянии в секундах. Если ответа нет, туннель считается зависшим. По умолчанию - 4."
+
+msgid "Timeouts"
+msgstr "Тайм-ауты"
+
+msgid "Tunnel stopped"
+msgstr "Туннель остановлен"
+
+msgid "Up to date."
+msgstr "Обновлений нет."
+
+msgid "Updates"
+msgstr "Обновления"
+
+msgid "Upgrade failed: "
+msgstr "Ошибка обновления: "
+
+msgid "Upgrade the tunnel to %s and restart it? Clients lose connection briefly."
+msgstr "Обновить туннель до %s и перезапустить? Связь у клиентов ненадолго прервётся."
+
+msgid "Upgrade to %s"
+msgstr "Обновить до %s"
+
+msgid "Upgraded to %s. Reloading..."
+msgstr "Обновлено до %s. Перезагрузка страницы…"
+
+msgid "Upgrades come only from the project feed on GitHub and are refused unless its signature verifies against the imported key."
+msgstr "Обновления устанавливаются только из репозитория проекта на GitHub и только если его подпись проходит проверку импортированным ключом."
+
+msgid "Upgrading"
+msgstr "Обновление"
+
+msgid "Used when OpenZiti has no answer or the tunnel is broken. Default: 1.1.1.1, 8.8.8.8."
+msgstr "Используются, если в OpenZiti нет ответа или туннель не работает. По умолчанию - 1.1.1.1, 8.8.8.8."
+
+msgid "Verifying the feed signature, installing and restarting the tunnel..."
+msgstr "Проверка подписи репозитория, установка и перезапуск туннеля…"
+
+msgid "Version"
+msgstr "Версия"
+
+msgid "Working"
+msgstr "Работает"
+
+msgid "dnsmasq asks OpenZiti first, so service names work without further setup. While the tunnel is broken, it uses the fallback servers."
+msgstr "dnsmasq сначала обращается к OpenZiti, поэтому имена сервисов работают без дополнительной настройки. При сбое туннеля используются резервные серверы."
+
+msgid "running"
+msgstr "работает"
+
+msgid "stopped"
+msgstr "остановлена"
+
+msgid "unknown"
+msgstr "неизвестно"
+
+msgid "verified (signed by the project)"
+msgstr "проверена (подписано проектом)"

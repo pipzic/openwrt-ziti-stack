@@ -107,15 +107,6 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 SDK_ARCHIVE="$(verified_fetch "$release" "$TARGET" 'openwrt-sdk-[^ ]*\.Linux-x86_64\.tar\.zst' "$CACHE_DIR")"
 SDK_DIR="$(unpack_sdk "$SDK_ARCHIVE" "$WORK_DIR")"
 
-FEED_DIR="$WORK_DIR/ziti-openwrt"
-git clone --filter=blob:none --quiet https://github.com/openziti/ziti-openwrt.git "$FEED_DIR"
-git -C "$FEED_DIR" -c advice.detachedHead=false checkout --quiet --detach "$ZITI_OPENWRT_REV"
-[[ "$(git -C "$FEED_DIR" rev-parse HEAD)" == "$ZITI_OPENWRT_REV" ]] || die "ziti-openwrt revision mismatch"
-
-for patch_file in "$ROOT"/patches/ziti-openwrt/*.patch; do
-  patch --batch --forward -d "$FEED_DIR" -p1 < "$patch_file"
-done
-
 # Exact versions: a stale upstream line must fail here, not ship silently.
 set_makefile_value() {
   local makefile="$1" variable="$2" value="$3"
@@ -123,18 +114,22 @@ set_makefile_value() {
   grep -qx "${variable}:=${value}" "$makefile" || die "could not set $variable in $makefile"
 }
 
-set_makefile_value "$FEED_DIR/package/ziti-edge-tunnel/Makefile" PKG_VERSION "$ZET_VERSION"
-set_makefile_value "$FEED_DIR/package/ziti-edge-tunnel/Makefile" PKG_HASH "$ZET_SHA256"
-set_makefile_value "$FEED_DIR/package/ziti-edge-tunnel/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
-set_makefile_value "$FEED_DIR/package/luci-app-ziti/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
+FEED_DIR="$WORK_DIR/packages"
+cp -R "$ROOT/packages" "$FEED_DIR"
+set_makefile_value "$FEED_DIR/ziti-edge-tunnel/Makefile" PKG_VERSION "$ZET_VERSION"
+set_makefile_value "$FEED_DIR/ziti-edge-tunnel/Makefile" PKG_HASH "$ZET_SHA256"
+set_makefile_value "$FEED_DIR/ziti-edge-tunnel/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
+set_makefile_value "$FEED_DIR/luci-app-ziti/Makefile" PKG_RELEASE "$PACKAGE_RELEASE"
 
 # Feed names accept only [A-Za-z0-9_].
-printf '\nsrc-link ziti_openwrt %s\n' "$FEED_DIR" >> "$SDK_DIR/feeds.conf.default"
+printf '\nsrc-link ziti_stack %s\n' "$FEED_DIR" >> "$SDK_DIR/feeds.conf.default"
 
 (
   cd "$SDK_DIR"
   # feeds.conf.default of the verified SDK pins the base and packages revisions.
-  ./scripts/feeds update base packages ziti_openwrt
+  ./scripts/feeds update base packages luci ziti_stack
+  # Only the translation compiler is needed from LuCI, not its packages.
+  make -C feeds/luci/modules/luci-base/src po2lmo
   ./scripts/feeds install ziti-edge-tunnel llhttp stc luci-app-ziti
 
   strip_sdk_release_package_snapshot
@@ -159,8 +154,9 @@ printf '\nsrc-link ziti_openwrt %s\n' "$FEED_DIR" >> "$SDK_DIR/feeds.conf.defaul
   done
 
   make -j"$BUILD_JOBS" \
-    package/feeds/ziti_openwrt/ziti-edge-tunnel/compile \
-    package/feeds/ziti_openwrt/luci-app-ziti/compile \
+    package/feeds/ziti_stack/ziti-edge-tunnel/compile \
+    package/feeds/ziti_stack/luci-app-ziti/compile \
+    PO2LMO="$PWD/feeds/luci/modules/luci-base/src/po2lmo" \
     V=s
 )
 

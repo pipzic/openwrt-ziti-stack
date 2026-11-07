@@ -1,0 +1,49 @@
+#
+# OpenZiti UCI config. Unset options use the default shown here.
+#
+
+config ziti 'main'
+	option log_level 'INFO'
+	# Who the tunnel's DNS asks about names that are not Ziti services.
+	# Set to none to refuse such names.
+	# option dns_upstream '1.1.1.1'
+	# dnsmasq asks these when Ziti has no answer or the tunnel is down.
+	# list dns_fallback_servers '1.1.1.1'
+	# list dns_fallback_servers '8.8.8.8'
+	# Watchdog: checks the tunnel and sends traffic around it while it is broken.
+	# option watchdog_enabled '1'
+	# option watchdog_interval '10'
+	# option watchdog_fails '3'
+	# option watchdog_recover '2'
+	# option watchdog_timeout '12'
+	# option watchdog_grace '20'
+	# Each check tries this many random service addresses. One answer from the fabric is
+	# enough, even from a service that is down.
+	# option watchdog_probe_count '3'
+	# Checked outside the tunnel, to tell a lost internet connection from a fabric failure.
+	# list watchdog_wan_probes '1.1.1.1'
+	# list watchdog_wan_probes '8.8.8.8'
+	# list watchdog_wan_probes '9.9.9.9'
+	# list watchdog_wan_probes '208.67.222.222'
+	# Resources that must really answer, as address[:port] or name[:port], port 443 if
+	# omitted. When set, they replace the addresses from the services.
+	# list watchdog_probes '192.0.2.10:443'
+	# Pauses before restarts without connection or while frozen. The last one repeats.
+	# list watchdog_restart_delays '60'
+	# list watchdog_restart_delays '300'
+	# list watchdog_restart_delays '900'
+	# list watchdog_restart_delays '1800'
+	# Seconds to wait for the tunnel's state, for an internet check address, and for DNS.
+	# option watchdog_status_timeout '4'
+	# option watchdog_wan_timeout '4'
+	# option watchdog_dns_timeout '5'
+	# A check passes only if traffic leaves from this public IP, as seen by verify_url.
+	# option verify_expect_ip '203.0.113.10'
+	# option verify_url 'https://api.ipify.org'
+	# option verify_timeout '8'
+	# While the tunnel is broken, block the addresses and names of its services
+	# instead of letting them go directly.
+	# option block_on_failure '0'
+	# Routing table and rule priority of the bypass. A running bypass keeps its old ones.
+	# option bypass_table '1890'
+	# option bypass_priority '100'

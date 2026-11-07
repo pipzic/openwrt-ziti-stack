@@ -45,6 +45,9 @@ case_install() {
 	ziti-edge-tunnel version
 	curl --version >/dev/null || fail "curl is missing"
 	[ -f /www/luci-static/resources/view/ziti/status.js ] || fail "LuCI views are missing"
+	[ -s /usr/lib/lua/luci/i18n/ziti.ru.lmo ] || fail "the translation is missing"
+	/usr/libexec/ziti-boot-guard identities | jsonfilter -e '@' >/dev/null || fail "guard identities"
+	/usr/libexec/rpcd/ziti list | jsonfilter -e '@.set_identity' >/dev/null || fail "rpcd set_identity"
 
 	/usr/libexec/rpcd/ziti list | jsonfilter -e '@.check_update' >/dev/null || fail "rpcd list"
 	result="$(/usr/libexec/rpcd/ziti call check_update </dev/null)"

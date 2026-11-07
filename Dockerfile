@@ -31,6 +31,7 @@ RUN apt-get update \
 COPY versions.env /opt/openwrt-ziti-stack/versions.env
 COPY keys /opt/openwrt-ziti-stack/keys
 COPY patches /opt/openwrt-ziti-stack/patches
+COPY packages /opt/openwrt-ziti-stack/packages
 COPY scripts /opt/openwrt-ziti-stack/scripts
 
 # The SDK refuses to build as root.

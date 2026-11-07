@@ -1,0 +1,17 @@
+{
+	"luci-app-ziti": {
+		"description": "Grant access to manage OpenZiti via LuCI",
+		"read": {
+			"ubus": {
+				"ziti": [ "status", "list_identities", "check_update" ]
+			},
+			"uci": [ "ziti" ]
+		},
+		"write": {
+			"ubus": {
+				"ziti": [ "enroll", "set_identity", "remove_identity", "service_action", "set_autostart", "upgrade_zet" ]
+			},
+			"uci": [ "ziti" ]
+		}
+	}
+}

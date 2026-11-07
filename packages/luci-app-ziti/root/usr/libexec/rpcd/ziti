@@ -1,0 +1,225 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# rpcd backend for luci-app-ziti.
+#
+# Implements the JSON-stdin/stdout protocol expected by /usr/sbin/rpcd:
+#
+#   $0 list                -> prints a JSON object describing methods
+#   $0 call <method>       -> reads JSON args from stdin, prints JSON result
+#
+# Methods are listed at the bottom of this file. enroll receives the raw JWT, keeps
+# it in a private file under a root-only directory, and always removes that file.
+
+set -u
+
+ZET_BIN="/usr/bin/ziti-edge-tunnel"
+GUARD="/usr/libexec/ziti-boot-guard"
+INIT="/etc/init.d/ziti-edge-tunnel"
+JWT_STAGE_DIR="/etc/ziti/.jwt-stage"
+
+# ---------- helpers ----------
+
+json_escape() {
+	# Minimal JSON string escape for shell-built strings.
+	awk 'BEGIN{
+		s=""
+		while ((getline line) > 0) {
+			if (s != "") s = s "\\n"
+			gsub(/\\/, "\\\\", line)
+			gsub(/"/, "\\\"", line)
+			gsub(/\t/, "\\t", line)
+			gsub(/\r/, "", line)
+			s = s line
+		}
+		print s
+	}'
+}
+
+emit_error() {
+	# emit_error "code" "message"
+	printf '{"error":{"code":"%s","message":"%s"}}\n' "$1" "$2"
+}
+
+# ---------- methods ----------
+
+method_status() {
+	local running=false autostart=false version="" state
+	pidof ziti-edge-tunnel >/dev/null 2>&1 && running=true
+	"$INIT" enabled 2>/dev/null && autostart=true
+	version="$("$ZET_BIN" version 2>/dev/null | head -n1 | tr -d '\r\n')"
+	# The binary prints the build's git version twice: v1.2.3.v1.2.3.
+	version="${version%%.v*}"
+	state=$("$GUARD" state | jsonfilter -e '@.state')
+	printf '{"running":%s,"autostart":%s,"version":"%s","state":"%s"}\n' \
+		"$running" "$autostart" "$version" "$state"
+}
+
+method_list_identities() {
+	printf '{"identities":%s}\n' "$("$GUARD" identities)"
+}
+
+method_enroll() {
+	local args jwt jwt_file out rc code message=""
+	args="$(cat)"
+	jwt=$(printf '%s' "$args" | jsonfilter -e '@.jwt' 2>/dev/null)
+	if [ -z "$jwt" ]; then
+		emit_error "invalid_args" "jwt required"
+		return
+	fi
+
+	# Private staging dir, not world-readable /tmp. JWTs are one-time secrets.
+	mkdir -p "$JWT_STAGE_DIR"
+	chmod 0700 "$JWT_STAGE_DIR"
+	jwt_file="$(mktemp -p "$JWT_STAGE_DIR" jwt.XXXXXX)" || {
+		emit_error "io_error" "cannot create staging file"
+		return
+	}
+	trap 'rm -f "$jwt_file"' EXIT INT TERM
+	printf '%s' "$jwt" > "$jwt_file"
+
+	out=$("$GUARD" enroll "$jwt_file")
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		# The guard prints a reason word, followed by text only for an unknown failure.
+		code=${out%% *}
+		[ "$code" = "$out" ] || message=${out#* }
+		emit_error "$code" "$(printf '%s' "$message" | json_escape)"
+		return
+	fi
+	printf '{"ok":true,"id":"%s"}\n' "$out"
+}
+
+method_set_identity() {
+	local args id en on=0
+	args="$(cat)"
+	id=$(printf '%s' "$args" | jsonfilter -e '@.id' 2>/dev/null)
+	en=$(printf '%s' "$args" | jsonfilter -e '@.enabled' 2>/dev/null)
+	{ [ "$en" = "true" ] || [ "$en" = "1" ]; } && on=1
+	if "$GUARD" identity-set "$id" "$on"; then
+		printf '{"ok":true}\n'
+	else
+		emit_error "set_failed" "cannot change identity; is the tunnel running?"
+	fi
+}
+
+method_remove_identity() {
+	local args id
+	args="$(cat)"
+	id=$(printf '%s' "$args" | jsonfilter -e '@.id' 2>/dev/null)
+	if "$GUARD" identity-remove "$id"; then
+		printf '{"ok":true}\n'
+	else
+		emit_error "not_found" "no such identity"
+	fi
+}
+
+method_set_autostart() {
+	local en
+	en=$(jsonfilter -e '@.enabled' 2>/dev/null)
+	if [ "$en" = "true" ] || [ "$en" = "1" ]; then
+		"$INIT" enable >/dev/null 2>&1
+	else
+		"$INIT" disable >/dev/null 2>&1
+	fi
+	printf '{"ok":true}\n'
+}
+
+method_service_action() {
+	local args action
+	args="$(cat)"
+	action=$(printf '%s' "$args" | jsonfilter -e '@.action' 2>/dev/null)
+	case "$action" in
+		start|stop|restart) ;;
+		*) emit_error "invalid_args" "bad action"; return;;
+	esac
+	"$INIT" "$action" >/dev/null 2>&1
+	printf '{"ok":true,"action":"%s"}\n' "$action"
+}
+
+# ---------- updates (signed feed, verified by apk) ----------
+
+_oz_feed_url() {
+	sed -n '/^[^#]/{p;q;}' /etc/apk/repositories.d/openwrt-ziti-stack.list 2>/dev/null
+}
+
+# Print the version from `apk list` lines such as
+# "ziti-edge-tunnel-1.18.7-r7 aarch64_cortex-a53 {...} (...) [installed]".
+_oz_version() {
+	sed -n 's/^ziti-edge-tunnel-\([^ ]*\) .*/\1/p' | head -n 1
+}
+
+# apk verifies the index signature against /etc/apk/keys itself, but an untrusted
+# index is only a warning: the update still exits 0 and the index is ignored.
+_oz_update_feed() {
+	local out
+	out=$(apk update 2>&1) || return 1
+	case "$out" in *UNTRUSTED*) return 1 ;; esac
+}
+
+method_check_update() {
+	local installed candidate feed upgradable
+	feed=$(_oz_feed_url)
+	if ! _oz_update_feed; then
+		emit_error "update_failed" "apk update failed; check the network and the feed signing key"
+		return
+	fi
+	installed=$(apk list -I ziti-edge-tunnel 2>/dev/null | _oz_version)
+	candidate=$(apk list ziti-edge-tunnel 2>/dev/null | _oz_version)
+	if apk list -u ziti-edge-tunnel 2>/dev/null | grep -q '^ziti-edge-tunnel-'; then upgradable=true; else upgradable=false; fi
+	printf '{"installed":"%s","candidate":"%s","feed":"%s","verified":true,"upgradable":%s}\n' \
+		"$installed" "$candidate" "$feed" "$upgradable"
+}
+
+method_upgrade_zet() {
+	if ! _oz_update_feed; then
+		emit_error "update_failed" "apk update failed; check the network and the feed signing key"
+		return
+	fi
+	local out rc v
+	out=$(apk add --upgrade ziti-edge-tunnel 2>&1); rc=$?
+	if [ $rc -ne 0 ]; then
+		emit_error "install_failed" "$(printf '%s' "$out" | json_escape)"
+		return
+	fi
+	/etc/init.d/ziti-edge-tunnel restart >/dev/null 2>&1
+	v=$(apk list -I ziti-edge-tunnel 2>/dev/null | _oz_version)
+	printf '{"ok":true,"version":"%s"}\n' "$v"
+}
+
+# ---------- dispatch ----------
+
+case "${1:-}" in
+	list)
+		cat <<'EOF'
+{
+	"status":           { },
+	"list_identities":  { },
+	"enroll":           { "jwt": "" },
+	"set_identity":     { "id": "", "enabled": false },
+	"remove_identity":  { "id": "" },
+	"service_action":   { "action": "" },
+	"set_autostart":    { "enabled": false },
+	"check_update":     { },
+	"upgrade_zet":      { }
+}
+EOF
+		;;
+	call)
+		case "${2:-}" in
+			status)          method_status ;;
+			list_identities) method_list_identities ;;
+			enroll)          method_enroll ;;
+			set_identity)    method_set_identity ;;
+			remove_identity) method_remove_identity ;;
+			service_action)  method_service_action ;;
+			set_autostart)   method_set_autostart ;;
+			check_update)    method_check_update ;;
+			upgrade_zet)     method_upgrade_zet ;;
+			*)               emit_error "no_method" "unknown method" ;;
+		esac
+		;;
+	*)
+		emit_error "usage" "expected: list | call <method>"
+		;;
+esac
