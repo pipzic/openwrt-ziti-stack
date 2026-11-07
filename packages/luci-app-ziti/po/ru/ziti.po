@@ -4,8 +4,8 @@ msgstr ""
 "Language: ru\n"
 "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 
-msgid "  Newest in feed: "
-msgstr "  Последняя в репозитории: "
+msgid "Newest in feed:"
+msgstr "Последняя в репозитории:"
 
 msgid "(none configured)"
 msgstr "(не настроен)"
@@ -43,8 +43,8 @@ msgstr "Не удалось прочитать файл"
 msgid "Changes apply without restarting the tunnel."
 msgstr "Изменения применяются без перезапуска туннеля."
 
-msgid "Check failed: "
-msgstr "Ошибка проверки: "
+msgid "Check failed:"
+msgstr "Ошибка проверки:"
 
 msgid "Check for updates"
 msgstr "Проверить обновления"
@@ -115,8 +115,8 @@ msgstr "Число неудачных проверок подряд для вк�
 msgid "Failed: %s"
 msgstr "Ошибка: %s"
 
-msgid "Feed: "
-msgstr "Репозиторий: "
+msgid "Feed:"
+msgstr "Репозиторий:"
 
 msgid "Maximum number of randomly selected addresses per check. For automatic service probes, an OpenZiti network response is enough, even if the service is down. Default: 3."
 msgstr "Максимальное число случайно выбранных адресов за одну проверку. При автоматической проверке сервисов достаточно ответа сети OpenZiti, даже если сам сервис недоступен. По умолчанию: 3."
@@ -124,8 +124,8 @@ msgstr "Максимальное число случайно выбранных 
 msgid "Identities"
 msgstr "Identity"
 
-msgid "During bypass, block traffic to service addresses and names. If disabled, traffic uses the router's normal routes, bypassing OpenZiti."
-msgstr "При обходе туннеля блокировать трафик к адресам и именам сервисов. Если выключено, трафик идёт по обычным маршрутам роутера, минуя OpenZiti."
+msgid "During bypass, block traffic to cached service addresses and names. With the watchdog on, installed rules also prevent source-zone traffic to cached non-default service prefixes from falling back to less specific routes after an unexpected process exit. If disabled, bypass uses the router's normal routes."
+msgstr "При обходе туннеля блокировать трафик к сохранённым адресам и именам сервисов. Если watchdog включён, установленные правила также не дают трафику из зон источника к сохранённым префиксам сервисов (кроме префикса по умолчанию) уйти по менее специфичным маршрутам после неожиданного завершения процесса. Если выключено, при обходе туннеля используются обычные маршруты роутера."
 
 msgid "Use these resources instead of automatic service probes. At least one resource selected for each check must accept a TCP connection; otherwise the check fails. Format: address or hostname, optionally followed by a port. Default port: 443."
 msgstr "Проверять эти ресурсы вместо автоматически выбранных адресов сервисов. Хотя бы один ресурс, выбранный для текущей проверки, должен принять TCP-подключение, иначе проверка считается неудачной. Формат: адрес или имя хоста, при необходимости с портом. По умолчанию: порт 443."
@@ -133,8 +133,8 @@ msgstr "Проверять эти ресурсы вместо автоматич
 msgid "If disabled, the watchdog does not check the tunnel or enable bypass on failure."
 msgstr "Если выключено, watchdog не проверяет туннель и не включает обход при сбое."
 
-msgid "Installed: "
-msgstr "Установлена: "
+msgid "Installed:"
+msgstr "Установлена:"
 
 msgid "Internet check"
 msgstr "Проверка интернета"
@@ -144,9 +144,6 @@ msgstr "Файл JWT"
 
 msgid "Log detail level. Info is recommended for normal use. Default: Info."
 msgstr "Уровень детализации логов. Для обычной работы рекомендуется Info. По умолчанию: Info."
-
-msgid "Log level"
-msgstr "Уровень логирования"
 
 msgid "Main settings"
 msgstr "Основные настройки"
@@ -250,8 +247,8 @@ msgstr "Удалить"
 msgid "Failed to remove identity: %s"
 msgstr "Не удалось удалить identity: %s"
 
-msgid "Resilience watchdog"
-msgstr "Resilience watchdog"
+msgid "Watchdog"
+msgstr "Watchdog"
 
 msgid "Restart"
 msgstr "Перезапустить"
@@ -274,8 +271,8 @@ msgstr "Служба"
 msgid "Settings"
 msgstr "Настройки"
 
-msgid "Signature: "
-msgstr "Подпись: "
+msgid "Signature:"
+msgstr "Подпись:"
 
 msgid "Start"
 msgstr "Запустить"
@@ -307,6 +304,9 @@ msgstr "Выбранный файл не является токеном OpenZit
 msgid "The token is invalid: it has expired, was already used, or was revoked. Create a new one on the controller."
 msgstr "Токен недействителен: истёк срок действия, токен уже использован или отозван. Создайте новый токен на контроллере."
 
+msgid "Tunnel routes missing; tunnel bypass enabled, restart pending"
+msgstr "Нет маршрутов туннеля; включён обход туннеля, ожидается перезапуск"
+
 msgid "Tunnel not responding; restart pending"
 msgstr "Туннель не отвечает; ожидается перезапуск"
 
@@ -334,8 +334,8 @@ msgstr "Обновлений нет."
 msgid "Updates"
 msgstr "Обновления"
 
-msgid "Upgrade failed: "
-msgstr "Ошибка обновления: "
+msgid "Upgrade failed:"
+msgstr "Ошибка обновления:"
 
 msgid "Upgrade the tunnel to %s and restart it?"
 msgstr "Обновить туннель до %s и перезапустить?"

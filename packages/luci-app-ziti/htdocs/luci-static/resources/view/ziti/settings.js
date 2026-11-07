@@ -125,7 +125,7 @@ return view.extend({
 		o.nocreate = true;
 		o.default = 'lan';
 
-		var ws = m.section(form.NamedSection, 'main', 'ziti', _('Resilience watchdog'),
+		var ws = m.section(form.NamedSection, 'main', 'ziti', _('Watchdog'),
 			_('Automatically checks the tunnel, enables bypass on failure, and restores tunnel routing after recovery. The tunnel keeps trying to reconnect.'));
 		ws.anonymous = true;
 
@@ -135,7 +135,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = ws.option(form.Flag, 'block_on_failure', _('Block services on failure'),
-			_('During bypass, block traffic to service addresses and names. If disabled, traffic uses the router\'s normal routes, bypassing OpenZiti.'));
+			_('During bypass, block traffic to cached service addresses and names. With the watchdog on, installed rules also prevent source-zone traffic to cached non-default service prefixes from falling back to less specific routes after an unexpected process exit. If disabled, bypass uses the router\'s normal routes.'));
 		o.default = '0';
 		o.rmempty = false;
 
@@ -201,12 +201,12 @@ return view.extend({
 			return runJob(callUpgrade()).then(function (res) {
 				ui.hideModal();
 				if (res && res.error)
-					return ui.addNotification(null, E('p', {}, _('Upgrade failed: ') + updateError(res.error)), 'danger');
+					return ui.addNotification(null, E('p', {}, _('Upgrade failed:') + ' ' + updateError(res.error)), 'danger');
 				ui.addNotification(null, E('p', {}, _('Upgraded to %s. Reloading...').format((res && res.version) || '')), 'info');
 				window.setTimeout(function () { location.reload(); }, 3000);
 			}).catch(function (e) {
 				ui.hideModal();
-				ui.addNotification(null, E('p', {}, _('Upgrade failed: ') + e.message), 'danger');
+				ui.addNotification(null, E('p', {}, _('Upgrade failed:') + ' ' + e.message), 'danger');
 			});
 		}
 
@@ -218,17 +218,17 @@ return view.extend({
 				r = r || {};
 				if (r.error) {
 					dom.content(results, E('div', { 'class': 'alert-message warning' },
-						_('Check failed: ') + updateError(r.error)));
+						_('Check failed:') + ' ' + updateError(r.error)));
 					return;
 				}
 				var upgradable = !!r.upgradable;
 				var kids = [
-					E('div', {}, [ _('Feed: '), E('code', {}, r.feed || _('(none configured)')) ]),
-					E('div', {}, [ _('Signature: '), r.verified
+					E('div', {}, [ _('Feed:') + ' ', E('code', {}, r.feed || _('(none configured)')) ]),
+					E('div', {}, [ _('Signature:') + ' ', r.verified
 						? E('span', { 'style': 'color:#5aa726;font-weight:bold' }, _('verified by apk'))
 						: E('span', { 'style': 'color:#c44;font-weight:bold' }, _('NOT verified')) ]),
-					E('div', {}, [ _('Installed: '), E('strong', {}, r.installed || _('?')),
-						_('  Newest in feed: '), E('strong', {}, r.candidate || _('?')) ])
+					E('div', {}, [ _('Installed:') + ' ', E('strong', {}, r.installed || _('?')),
+						' ' + _('Newest in feed:') + ' ', E('strong', {}, r.candidate || _('?')) ])
 				];
 				if (r.other)
 					kids.push(E('div', { 'class': 'alert-message warning' },
@@ -246,7 +246,7 @@ return view.extend({
 				dom.content(results, kids);
 			}).catch(function (e) {
 				ui.hideModal();
-				dom.content(results, E('div', { 'class': 'alert-message warning' }, _('Check failed: ') + e.message));
+				dom.content(results, E('div', { 'class': 'alert-message warning' }, _('Check failed:') + ' ' + e.message));
 			});
 		}
 

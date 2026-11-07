@@ -4,6 +4,22 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r24 - 2026-11-07
+
+### Added
+
+- With the watchdog and **Block services on failure** enabled, the watchdog installs routing rules to protect cached service prefixes before an unexpected tunnel process exit. Once installed, these rules prevent source-zone traffic from falling back to less specific routes before the watchdog notices the exit. There are two rules per source-zone device and cached non-default service prefix, plus a pair for `198.18.0.0/16`, at `bypass_priority + 1` and `bypass_priority + 2`. Equally specific or more specific routes in the main table still work. The router's own traffic is not affected.
+
+### Changed
+
+- The README explains why a full tunnel breaks port forwards to LAN servers and can disrupt a controller or OpenZiti router behind the same router.
+- The watchdog section on the settings page is named "Watchdog" in both languages instead of "Resilience watchdog". The log level field keeps LuCI's own Russian name, and the package no longer carries its own translation for it.
+
+### Fixed
+
+- Probes bound to `ziti0` could pass even when tunnel routes were missing from the main table and client traffic used normal routes. Before starting connections, the watchdog now checks the longest matching IPv4 prefix for each resolved target. A target with only a default route outside the tunnel, or no matching route, fails the check with the new state "Tunnel routes missing" and schedules a restart after the configured pause. Targets with a more specific route outside the tunnel are skipped. If at least one target is skipped and none remain to probe, the traffic check passes, including for custom resources.
+- In Russian, the update check showed "Feed:", "Signature:", "Installed:" and "Newest in feed:", and the "Check failed:" and "Upgrade failed:" prefixes, in English. LuCI drops the spaces around a string before it looks up the translation, so strings that began or ended with a space were never found. The spaces are now outside the translated strings.
+
 ## 1.18.7-r23 - 2026-11-07
 
 The package preserves the router's DNS server settings and no longer edits `/etc/hosts`.

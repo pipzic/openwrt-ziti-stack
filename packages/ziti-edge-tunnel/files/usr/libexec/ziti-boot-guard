@@ -16,7 +16,7 @@
 #   identity-set <id> <0|1>   Turn an identity off or on.
 #   identity-remove <id>      Delete an identity.
 #   setup               Create the firewall zone and forwardings, apply the dnsmasq changes.
-#   uninstall           Undo the bypass, the dnsmasq changes and the firewall sections.
+#   uninstall           Undo the bypass, the blocking rules, the dnsmasq changes and the firewall sections.
 
 set -u
 
@@ -31,6 +31,7 @@ DNS_NET="198.18.0.0/16"
 DNS_IP="198.18.0.2"
 
 BYPASS_FILE="/var/run/ziti-bypass"
+BLOCK_RULES="/var/run/ziti-block-rules"
 PROBE_POOL="/var/run/ziti-probe-pool"
 FABRIC_NAMES="/var/run/ziti-fabric-names"
 STATE_FILE="/var/run/ziti-guard.state"
@@ -378,6 +379,71 @@ bypass_off() {
 	log "bypass off"
 }
 
+# ---- blocking before the next check ----
+# Once installed, these rules prevent source-zone traffic from falling back to less
+# specific routes when the tunnel exits. Each device and cached non-default service
+# prefix gets a pair, plus one for DNS_NET. Main is used only for a route at least as
+# specific as the protected prefix; otherwise traffic is rejected. Routes outside the
+# tunnel can also qualify. Locally generated traffic is not matched. The rules follow
+# the bypass priority, so bypass takes over once the watchdog enables it.
+block_rules_want() {
+	local prio z dev fam p len
+	cfg_enabled && cfg_block && tunnel_wanted && [ -s "$SERVICE_PREFIXES" ] || return 0
+	prio=$(cfg_num bypass_priority 100)
+	for z in $(cfg_zones); do
+		case "$z" in ziti|*[!A-Za-z0-9_]*) continue ;; esac
+		fw4 -q zone "$z" 2>/dev/null
+	done | sort -u | while read -r dev; do
+		case "$dev" in ''|*[!A-Za-z0-9_.@-]*) continue ;; esac
+		{ cat "$SERVICE_PREFIXES"; echo "-4 $DNS_NET"; } | while read -r fam p; do
+			case "$p" in
+				default) continue ;;
+				*/*) len=${p##*/} ;;
+				*) if [ "$fam" = -6 ]; then len=128; else len=32; fi ;;
+			esac
+			case "$len" in ''|*[!0-9]*|0) continue ;; esac
+			echo "$fam $((prio + 1)) iif $dev to $p lookup main suppress_prefixlength $((len - 1))"
+			echo "$fam $((prio + 2)) iif $dev to $p unreachable"
+		done
+	done
+}
+
+# Reads "family priority selector..." lines.
+block_rules_apply() {
+	local fam prio sel
+	while read -r fam prio sel; do
+		# shellcheck disable=SC2086
+		ip "$fam" rule "$1" priority "$prio" $sel 2>/dev/null
+	done
+}
+
+# Replace the rules only when the desired list changes: cached prefixes, zone devices,
+# settings, or whether the tunnel is wanted.
+block_rules_sync() {
+	local tmp
+	tmp=$(mktemp) || return 0
+	block_rules_want > "$tmp"
+	if cmp -s "$tmp" "$BLOCK_RULES" || { [ ! -s "$tmp" ] && [ ! -e "$BLOCK_RULES" ]; }; then
+		rm -f "$tmp"
+		return 0
+	fi
+	[ -e "$BLOCK_RULES" ] && block_rules_apply del < "$BLOCK_RULES"
+	if [ -s "$tmp" ]; then
+		block_rules_apply add < "$tmp"
+		mv "$tmp" "$BLOCK_RULES"
+		log "early blocking on: $(awk '/unreachable/ {print $6}' "$BLOCK_RULES" | sort -u | tr '\n' ' ')"
+	else
+		rm -f "$tmp" "$BLOCK_RULES"
+		log "early blocking off"
+	fi
+}
+
+block_rules_clear() {
+	[ -e "$BLOCK_RULES" ] || return 0
+	block_rules_apply del < "$BLOCK_RULES"
+	rm -f "$BLOCK_RULES"
+}
+
 # ---- checks ----
 # True if the Ziti resolver answers at all, a refusal included.
 resolver_answers() {
@@ -472,22 +538,52 @@ probe_targets() {
 # The whole line: a reason can repeat word for word, and only the time tells them apart.
 last_failure() { logread -e ziti-edge-tunnel -l 300 2>/dev/null | grep 'reason=' | tail -n 1; }
 
+# Classify the longest matching IPv4 prefix in main for $1: tunnel, other, or default.
+# default includes no matching route. Other policy routing rules are not checked.
+route_kind() {
+	ip -4 route show table main match "$1" 2>/dev/null | awk '
+		BEGIN { best = -1 }
+		{
+			p = $1
+			if (p ~ /^(unreachable|blackhole|prohibit|throw)$/) p = $2
+			len = p == "default" ? 0 : (p ~ /\//) ? substr(p, index(p, "/") + 1) + 0 : 32
+			if (len > best) { best = len; tun = / dev ziti0( |$)/ }
+		}
+		END { print (tun ? "tunnel" : best > 0 ? "other" : "default") }'
+}
+
 # The tunneler answers a TCP connect only after the fabric dial succeeds, so a connection
 # proves the whole path. A refusal from the target or a service without terminators
 # still proves the fabric: it carried the dial and reported back. Reads "host port"
-# lines and prints ok, alive or failed.
-# All addresses are tried at once, so a dead fabric costs one timeout, not one per
-# address. The first connection decides, and the other attempts are stopped.
+# lines and prints ok, alive, failed, no-routes or skipped.
+# TCP probes bind to ziti0, so they can pass even when its route is missing from main.
+# Resolve targets first and check their longest matching IPv4 prefixes in main.
+# A non-tunnel default route or no match returns no-routes before any TCP attempts.
+# Other specific routes are skipped; skipped is returned if none remain to probe.
+# TCP attempts run in parallel, so a dead fabric costs one timeout, not one per address.
+# The first successful connection ends the check and stops the remaining attempts.
 probe_all() {
-	local limit fifo before after host port ip r pids="" n=0 result=failed
+	local limit fifo before after host port ip r list="" skipped=0 pids="" n=0 result=failed
 	limit=$(cfg_num watchdog_timeout 12)
+	while read -r host port; do
+		ip=$(resolve_v4 "$host" "$DNS_IP" | head -n 1)
+		[ -n "$ip" ] || continue
+		case $(route_kind "$ip") in
+			tunnel)  list="$list $ip $port" ;;
+			default) echo no-routes; return ;;
+			*)       skipped=1 ;;
+		esac
+	done
+	if [ -z "$list" ] && [ "$skipped" = 1 ]; then echo skipped; return; fi
 	fifo=$(mktemp -u) && mkfifo -m 600 "$fifo" || { echo failed; return; }
 	exec 3<>"$fifo"
 	rm -f "$fifo"
 	before=$(last_failure)
-	while read -r host port; do
-		ip=$(resolve_v4 "$host" "$DNS_IP" | head -n 1)
-		[ -n "$ip" ] || continue
+	# shellcheck disable=SC2086
+	set -- $list
+	while [ "$#" -ge 2 ]; do
+		ip=$1 port=$2
+		shift 2
 		# Only the connect time matters: the service may not speak HTTP. One that stays
 		# silent is dropped a second after the connect, not at the timeout.
 		curl -s -o /dev/null --connect-timeout "$limit" -m "$limit" -y 1 -Y 1 --interface ziti0 \
@@ -554,7 +650,8 @@ tunnel_health() {
 	targets=$(probe_targets)
 	if [ -n "$targets" ]; then
 		r=$(echo "$targets" | probe_all)
-		if [ "$r" = ok ] || { [ "$r" = alive ] && [ "$strict" = 0 ]; }; then passed=1; fi
+		[ "$r" = no-routes ] && { echo no-routes; return; }
+		if [ "$r" = ok ] || [ "$r" = skipped ] || { [ "$r" = alive ] && [ "$strict" = 0 ]; }; then passed=1; fi
 		if [ "$passed" = 0 ]; then
 			wan_up && echo no-data || echo no-internet
 			return
@@ -611,8 +708,8 @@ restart_tunnel() {
 	"$INIT" restart >/dev/null 2>&1
 }
 
-# The process is gone, but nobody stopped it: it was started, and Stop was not pressed.
-tunnel_crashed() { [ -e "$START_MARK" ] && [ ! -e "$STOP_MARK" ] && [ -n "$(list_identities)" ]; }
+# Started, and Stop was not pressed. With the process gone, it crashed.
+tunnel_wanted() { [ -e "$START_MARK" ] && [ ! -e "$STOP_MARK" ] && [ -n "$(list_identities)" ]; }
 
 cmd_watchdog() {
 	local interval fails recover health bad=0 good=0
@@ -624,16 +721,17 @@ cmd_watchdog() {
 		recover=$(cfg_num watchdog_recover 2)
 		fabric_dns_sync
 		firewall_sync
+		block_rules_sync
 
 		# The state is written before the changes: a dnsmasq restart takes a few seconds.
 		if ! tunnel_running; then
 			if [ -z "$(list_identities)" ]; then set_state no-identities
-			elif tunnel_crashed; then set_state crashed
+			elif tunnel_wanted; then set_state crashed
 			else set_state stopped; fi
 			# The tun device and its routes are gone with the process, and traffic to services
 			# would go directly until procd starts it again. Blocking holds it back meanwhile.
 			# Stop, by hand, is the user's choice and lifts the blocking.
-			if tunnel_crashed && cfg_enabled && cfg_block; then
+			if tunnel_wanted && cfg_enabled && cfg_block; then
 				bypass_on crashed
 			else
 				bypass_off
@@ -671,8 +769,9 @@ cmd_watchdog() {
 					bypass_on "$health"
 					dns_sync 0
 				fi
+				# Restart after the configured pause to reload missing tunnel routes.
 				case "$health" in
-					no-connection|hung) restart_due && restart_tunnel "$health" ;;
+					no-connection|hung|no-routes) restart_due && restart_tunnel "$health" ;;
 				esac
 			fi
 			# The WAN gateway can change while the bypass is on.
@@ -853,6 +952,7 @@ cmd_setup() {
 
 cmd_uninstall() {
 	bypass_off
+	block_rules_clear
 	block_names 0
 	fabric_dns_off
 	dns_restore

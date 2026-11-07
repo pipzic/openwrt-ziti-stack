@@ -53,6 +53,7 @@ function stateLabel(state) {
 	case 'no-internet':   return _('No internet connection');
 	case 'no-connection': return _('No connection to the controller or OpenZiti routers; tunnel bypass enabled');
 	case 'no-data':       return _('Connected, but traffic checks failed; tunnel bypass enabled');
+	case 'no-routes':     return _('Tunnel routes missing; tunnel bypass enabled, restart pending');
 	case 'hung':          return _('Tunnel not responding; restart pending');
 	default:              return state || _('unknown');
 	}

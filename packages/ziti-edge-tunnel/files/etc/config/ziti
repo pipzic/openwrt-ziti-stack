@@ -33,9 +33,12 @@ config ziti 'main'
 	# option watchdog_status_timeout '4'
 	# option watchdog_wan_timeout '3'
 	# option watchdog_dns_timeout '3'
-	# While the tunnel is broken, or its process has exited and Stop was not pressed,
-	# block the addresses and names of its services instead of letting them go directly.
+	# With the watchdog on, block cached service addresses and names during bypass,
+	# including after an unexpected process exit. Stop lifts the blocking.
+	# Installed rules prevent source-zone traffic to cached non-default service prefixes
+	# from falling back to less specific routes before the next check.
 	# option block_on_failure '0'
 	# Routing table and rule priority of the bypass. A running bypass keeps its old ones.
+	# Blocking rules use bypass_priority + 1 and bypass_priority + 2.
 	# option bypass_table '1890'
 	# option bypass_priority '100'

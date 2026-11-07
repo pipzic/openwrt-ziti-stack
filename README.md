@@ -58,7 +58,8 @@ These routers have official OpenWrt 25.12.6 images for `mediatek/filogic`, the b
 
 | Router | SoC | RAM | Tested on a live router |
 |---|---|---|---|
-| Cudy WR3000P v1 | MT7981B | 512 MB | Not yet |
+| Cudy WR3000P v1 | MT7981B | 512 MB | Yes, OpenWrt 25.12.6 |
+| Cudy WR3000P v1 (OpenWrt U-Boot layout) | MT7981B | 512 MB | Yes, same hardware as the WR3000P v1 |
 | Cudy TR3000 v1 | MT7981B | 512 MB | Not yet; same SoC and RAM as the WR3000P |
 | GL.iNet GL-MT3000 | MT7981B | 512 MB | Not yet; same SoC and RAM as the WR3000P |
 | OpenWrt One | MT7981B | 1 GB | Not yet |
@@ -134,11 +135,13 @@ The tunneler loads all enabled identities. Their service intercept configuration
 
 A service that should carry all IPv4 traffic must intercept `0.0.0.0/1` and `128.0.0.0/1`. An intercept of `0.0.0.0/0` does not work on a router: the tunneler cannot add a second default route.
 
-Do not send all traffic through the tunnel if your Ziti controller or routers sit behind this router: their own traffic enters the tunnel too.
+**A full tunnel breaks port forwards.** With `0.0.0.0/1` and `128.0.0.0/1` in the tunnel, replies from LAN servers to internet clients follow the tunnel unless a more specific route takes them elsewhere. Connections forwarded from WAN to the LAN then fail because replies do not return through WAN. Connection tracking does not automatically select the return path. For the same reason, do not use a full tunnel if your Ziti controller or routers sit behind this router: their internet traffic follows the tunnel too. The package does not add routing exceptions for these hosts.
 
 **On tunnel failure,** the watchdog enables bypass while leaving the tunnel running so it can reconnect. Routing through the tunnel resumes after the configured number of successful checks. The watchdog restarts the tunnel only if it stops responding or remains disconnected despite working internet access. It does not start a tunnel you stopped manually. After a reboot, the autostart setting determines whether the tunnel starts.
 
 During bypass, traffic follows the router's normal routes and uses its normal public address. To block traffic to service addresses and names instead, enable **Block services on failure** in the settings. Blocking also applies if the tunnel process exits unexpectedly, until procd restarts it and the checks pass. Selecting **Stop** removes the blocking.
+
+The tunnel's routes disappear when its process exits. The watchdog notices on a later check; checks and other work can make this take longer than one interval. With the watchdog and blocking enabled, once service prefixes have been cached, the watchdog installs two rules for each source-zone device and cached non-default service prefix. It also adds a pair for `198.18.0.0/16`. These rules remain while the tunnel is started and has not been stopped. The first rule uses the main table only if its matching route is at least as specific as the protected prefix. The second rejects traffic that did not find such a route. Once installed, the rules prevent traffic from falling back to a less specific route when the tunnel exits. Equally specific or more specific routes outside the tunnel still work. The router's own traffic is not affected.
 
 **By default, the watchdog checks the OpenZiti network rather than service availability.** Each check randomly selects up to the configured number of addresses from enabled identities' services. It resolves any selected hostnames and starts TCP connection attempts through the tunnel in parallel. A successful connection ends the check and cancels the remaining attempts. If no connection succeeds, certain failure messages in the tunneler log also count as a response from OpenZiti:
 
@@ -151,6 +154,8 @@ During bypass, traffic follows the router's normal routes and uses its normal pu
 An unavailable service can therefore leave the tunnel marked healthy while connections to that service fail. This also applies to an exit service carrying all intercepted traffic. To require a successful TCP connection, list resources under **Check specific resources**. Each check samples only that list, up to the configured address count, and fails if none of the selected resources accepts a connection.
 
 Each unique address-and-port pair has the same chance of selection. Hostnames are resolved when selected. For an IPv4 subnet, the probe uses the listed address plus one where possible, such as `128.0.0.1` for `128.0.0.0/1`; `/31` and `/32` addresses are used unchanged. Wildcard names, IPv6 addresses, and UDP-only services are excluded from automatic probes. If no probe targets are available, the watchdog relies on authentication and router connection status.
+
+The TCP probes are bound to `ziti0`, so they can reach the tunnel even when its route is missing from the main table. Before starting the connections, the watchdog checks the longest matching IPv4 prefix in the main table for each resolved target. If any target has only a default route outside the tunnel, or no matching route, the check returns "Tunnel routes missing". The watchdog schedules a restart after the configured pause to reload the routes. Targets with a more specific route outside the tunnel, such as a LAN subnet, are skipped. If at least one target is skipped and none remain to probe, the traffic check passes, including for custom resources. This examines the main table only; it does not evaluate other policy routing rules.
 
 To see what it would check, run `/usr/libexec/ziti-boot-guard probes`.
 
@@ -174,7 +179,9 @@ flowchart TD
     F -->|Yes| G{Any services?}
     G -->|No| NS
     G -->|Yes| I[Pick random addresses, or the ones set by hand]
-    I --> J{Check passed using the criteria above?}
+    I --> RT{Any resolved target has only a default route outside the tunnel, or no route in main?}
+    RT -->|Yes| NR[No routes: failed check, restart after a pause]
+    RT -->|No: skip targets routed elsewhere| J{Check passed using the criteria above?}
     J -->|No| W2{Internet works outside the tunnel?}
     W2 -->|Yes| ND[No data]
     W2 -->|No| NI
@@ -183,6 +190,7 @@ flowchart TD
     NC --> BAD
     NI --> BAD
     ND --> BAD
+    NR --> BAD
     BAD --> L{Enough failed checks in a row?}
     L -->|Yes| BY[Bypass on, Ziti DNS unlisted]
     OK --> M{Enough good checks in a row?}
@@ -233,7 +241,7 @@ Set these in the web interface under Services > OpenZiti > Settings, or with `uc
 | `log_level` | `INFO` | Log detail level |
 | `source_zones` | `lan` | Firewall zones whose traffic may enter the tunnel |
 | `watchdog_enabled` | `1` | Check the tunnel and send traffic around it on failure |
-| `block_on_failure` | `0` | During bypass, block traffic to cached service addresses and names, including after an unexpected process exit |
+| `block_on_failure` | `0` | During bypass, block traffic to cached service addresses and names. With the watchdog on, installed rules also prevent source-zone traffic to cached non-default service prefixes from falling back to less specific routes after an unexpected process exit |
 | `watchdog_probes` | none | Resources that must accept a connection, as `address[:port]` or `name[:port]`, port 443 if omitted |
 | `watchdog_interval` | `5` | Seconds between checks |
 | `watchdog_fails` | `3` | Consecutive failed checks before bypass; an unresponsive tunnel triggers bypass immediately |
@@ -247,7 +255,7 @@ Set these in the web interface under Services > OpenZiti > Settings, or with `uc
 | `watchdog_wan_timeout` | `3` | Seconds to wait for one internet check address |
 | `watchdog_dns_timeout` | `3` | Seconds to wait for a DNS answer |
 | `bypass_table` | `1890` | Routing table of the bypass |
-| `bypass_priority` | `100` | Priority of the rule that selects it |
+| `bypass_priority` | `100` | Priority of the rule that selects the bypass table. Blocking rules use this value plus 1 and 2 |
 
 To check that a full tunnel can reach a public resource through its exit, add a target under **Check specific resources**, for example `1.1.1.1:443`. If the TCP connection fails for the configured number of checks, the watchdog enables bypass. This checks connectivity, not the exit's public IP address.
 
@@ -289,10 +297,11 @@ These are set in the code and cannot be changed in the settings:
 | `ziti-fabric.conf` in dnsmasq's configuration directory, with the rules for the controller and router names | While the watchdog runs |
 | Two routing rules per address family at priority `100`, and table `1890` | While bypass is enabled. The first rule lets the watchdog's own checks reach the tunnel |
 | `ziti-block.conf` in dnsmasq's configuration directory | While traffic goes around the tunnel, with **Block services on failure** ticked |
+| Routing rules at `bypass_priority + 1` and `bypass_priority + 2` (`101` and `102` by default), two per source-zone device and cached non-default service prefix, plus a pair for `198.18.0.0/16` | Installed by the watchdog once service prefixes are cached, with the watchdog on, **Block services on failure** enabled, at least one identity present, and the tunnel started without Stop |
 
 **Leaves alone:** your DNS servers, rebind protection, `/etc/hosts`, forwardings into `ziti` that you made yourself, the `lan` to `wan` forwarding, WAN and wireless settings. The package removes none of your settings.
 
-**After `apk del`:** the bypass rules and tables, package-managed firewall sections, and dnsmasq changes are removed, and your original `strictorder` value is restored. Identities and modified settings remain for later reinstallation, as does the `ziti` group. Remove the key and feed list as shown under [Remove](#remove).
+**After `apk del`:** the bypass and blocking rules, the bypass tables, package-managed firewall sections, and dnsmasq changes are removed, and your original `strictorder` value is restored. Identities and modified settings remain for later reinstallation, as does the `ziti` group. Remove the key and feed list as shown under [Remove](#remove).
 
 ## Update the packages
 
