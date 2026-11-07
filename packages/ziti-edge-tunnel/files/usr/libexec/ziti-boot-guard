@@ -15,17 +15,13 @@
 #   enroll <jwt-file>   Enroll an identity and restart the tunnel to load it.
 #   identity-set <id> <0|1>   Turn an identity off or on.
 #   identity-remove <id>      Delete an identity.
-#   refresh-hosts       Re-resolve controller addresses into /etc/hosts.
-#   setup               Create the firewall zone and apply DNS settings.
-#   uninstall           Undo the bypass, DNS settings and firewall sections.
+#   setup               Create the firewall zone and forwardings, apply the dnsmasq changes.
+#   uninstall           Undo the bypass, the dnsmasq changes and the firewall sections.
 
 set -u
 
 IDENT_DIR="/etc/ziti/identities"
 RUNTIME="$IDENT_DIR/config.json"
-HOSTS_FILE="/etc/hosts"
-HOSTS_BEGIN="# BEGIN ziti-managed (ziti-boot-guard)"
-HOSTS_END="# END ziti-managed (ziti-boot-guard)"
 INIT="/etc/init.d/ziti-edge-tunnel"
 ZET="ziti-edge-tunnel"
 
@@ -36,13 +32,16 @@ DNS_IP="198.18.0.2"
 
 BYPASS_FILE="/var/run/ziti-bypass"
 PROBE_POOL="/var/run/ziti-probe-pool"
+FABRIC_NAMES="/var/run/ziti-fabric-names"
 STATE_FILE="/var/run/ziti-guard.state"
 STOP_MARK="/var/run/ziti-stopped"
 START_MARK="/var/run/ziti-started"
 SERVICE_NAMES="/etc/ziti/service-names"
+SERVICE_PREFIXES="/etc/ziti/service-prefixes"
 DNS_SAVED="/etc/ziti/dns.saved"
 ZONE=ziti_zone
-FORWARDING=ziti_lan
+# Forwardings into the zone are named ziti_fwd_<source zone>.
+FORWARDING=ziti_fwd_
 
 log() { logger -t ziti-guard "$*"; }
 
@@ -53,32 +52,30 @@ cfg_enabled() { [ "$(uci_get watchdog_enabled)" != 0 ]; }
 cfg_block() { [ "$(uci_get block_on_failure)" = 1 ]; }
 cfg_wan_probes() { cfg_list watchdog_wan_probes "1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222"; }
 cfg_status_timeout() { cfg_num watchdog_status_timeout 4; }
-cfg_verify_url() { local u; u=$(uci_get verify_url); echo "${u:-https://api.ipify.org}"; }
-cfg_fallbacks() { cfg_list dns_fallback_servers "1.1.1.1 8.8.8.8"; }
+cfg_zones() { cfg_list source_zones "lan"; }
 
 tunnel_running() { pidof ziti-edge-tunnel >/dev/null 2>&1; }
 set_state() { echo "$1" > "$STATE_FILE"; }
 
 # Run a command with output to a file, killing it after $2 seconds. This router has
-# no timeout(1), and a frozen tunneler never answers its control socket.
+# no timeout(1), and a frozen tunneler never answers its control socket. A timer in the
+# background does the killing, so a quick answer returns at once; BusyBox sleep takes
+# whole seconds only. The timer takes its sleep down with it.
 bounded() {
-	local out="$1" limit="$2" pid i=0
+	local out="$1" limit="$2" pid timer rc
 	shift 2
 	"$@" > "$out" 2>/dev/null &
 	pid=$!
-	while [ "$i" -lt "$limit" ] && kill -0 "$pid" 2>/dev/null; do
-		sleep 1
-		i=$((i+1))
-	done
-	if kill -0 "$pid" 2>/dev/null; then
-		kill "$pid" 2>/dev/null
-		wait "$pid" 2>/dev/null
-		return 1
-	fi
-	wait "$pid"
+	( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "$limit" & s=$!; wait "$s"; kill "$pid" 2>/dev/null ) &
+	timer=$!
+	wait "$pid" 2>/dev/null
+	rc=$?
+	kill "$timer" 2>/dev/null
+	wait "$timer" 2>/dev/null
+	return "$rc"
 }
 
-# ---- controller addresses in /etc/hosts ----
+# ---- names ----
 is_ipv4() { echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; }
 
 url_host() {
@@ -96,59 +93,32 @@ list_controllers() {
 	done | sort -u
 }
 
-# Ask a server directly, dnsmasq by default: /etc/hosts must not answer, and dnsmasq
-# has working fallbacks.
+# Ask one server directly, with a bounded wait.
 resolve_v4() {
 	local tmp
 	is_ipv4 "$1" && { echo "$1"; return 0; }
 	tmp=$(mktemp) || return 1
-	bounded "$tmp" "$(cfg_num watchdog_dns_timeout 5)" nslookup -type=A "$1" "${2:-127.0.0.1}"
+	bounded "$tmp" "$(cfg_num watchdog_dns_timeout 3)" nslookup -type=A "$1" "$2"
 	sed -n '/^Name:/,$p' "$tmp" | awk '/^Address/ {print $NF}' \
 		| grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 	rm -f "$tmp"
 }
 
-strip_managed_block() {
-	awk -v b="$HOSTS_BEGIN" -v e="$HOSTS_END" '
-		$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}' "$HOSTS_FILE"
-}
-
-# A resolution with no result keeps the old addresses: a DNS blip is not a change.
-refresh_hosts() {
-	local blk out url host ip
-	blk=$(mktemp) && out=$(mktemp) || return 1
-	list_controllers | while IFS= read -r url; do
-		host=$(url_host "$url")
-		[ -n "$host" ] || continue
-		is_ipv4 "$host" && continue
-		for ip in $(resolve_v4 "$host"); do
-			printf '%s %s\n' "$ip" "$host"
-		done
-	done > "$blk"
-	if [ -s "$blk" ]; then
-		{ strip_managed_block; echo "$HOSTS_BEGIN"; cat "$blk"; echo "$HOSTS_END"; } > "$out"
-		cmp -s "$out" "$HOSTS_FILE" || { cat "$out" > "$HOSTS_FILE"; log "controller addresses updated"; }
-	fi
-	rm -f "$blk" "$out"
-}
-
 # ---- DNS ----
-# dnsmasq asks the Ziti resolver first, in strict order. strict-order waits on a
-# silent server, so the resolver is listed only while the tunnel is healthy.
-dns_servers_del() {
-	local s
-	uci -q del_list "dhcp.@dnsmasq[0].server=$DNS_IP"
-	for s in $(cat "$DNS_SAVED.servers" 2>/dev/null); do
-		uci -q del_list "dhcp.@dnsmasq[0].server=$s"
-	done
-}
+# dnsmasq asks the Ziti resolver first, in strict order, and then the router's own DNS:
+# the user's servers and, unless turned off, the WAN resolv file. The resolver refuses
+# names that are not services, so dnsmasq moves on to the next server. strict-order
+# waits on a silent server, so the resolver is listed only while the tunnel is healthy.
+dns_servers() { uci -q get dhcp.@dnsmasq[0].server | tr ' ' '\n' | grep -v '^$'; }
 
+# The resolver goes first: strict order would otherwise ask the user's servers before it.
+# The rest of the list keeps its order.
 dns_set_servers() {
-	local want="$1" s
-	dns_servers_del
-	cfg_fallbacks > "$DNS_SAVED.servers"
+	local want="$1" rest s
+	rest=$(dns_servers | grep -Fxv "$DNS_IP")
+	uci -q delete dhcp.@dnsmasq[0].server
 	[ "$want" = 1 ] && uci add_list "dhcp.@dnsmasq[0].server=$DNS_IP"
-	for s in $(cat "$DNS_SAVED.servers"); do
+	for s in $rest; do
 		uci add_list "dhcp.@dnsmasq[0].server=$s"
 	done
 	uci commit dhcp
@@ -157,36 +127,138 @@ dns_set_servers() {
 
 dns_save_options() {
 	[ -e "$DNS_SAVED" ] && return 0
-	local o v
-	for o in noresolv strictorder; do
-		v=$(uci -q get "dhcp.@dnsmasq[0].$o")
-		echo "$o ${v:--}"
-	done > "$DNS_SAVED"
-	uci set dhcp.@dnsmasq[0].noresolv=1
-	uci set dhcp.@dnsmasq[0].strictorder=1
+	local v
+	v=$(uci -q get dhcp.@dnsmasq[0].strictorder)
+	echo "strictorder ${v:--}" > "$DNS_SAVED"
 }
 
-dns_listed() { uci -q get dhcp.@dnsmasq[0].server | tr ' ' '\n' | grep -Fxq "$DNS_IP"; }
-
 dns_sync() {
-	local want="$1" have=0
+	local want="$1" ok=1
+	[ "$(uci -q get dhcp.@dnsmasq[0].strictorder)" = 1 ] || ok=0
 	dns_save_options
-	dns_listed && have=1
-	if [ "$want" != "$have" ] || [ "$(cfg_fallbacks)" != "$(cat "$DNS_SAVED.servers" 2>/dev/null)" ]; then
-		dns_set_servers "$want"
-		log "Ziti DNS $([ "$want" = 1 ] && echo listed || echo removed)"
+	if [ "$want" = 1 ]; then
+		[ "$(dns_servers | head -n 1)" = "$DNS_IP" ] || ok=0
+	else
+		dns_servers | grep -Fxq "$DNS_IP" && ok=0
 	fi
+	[ "$ok" = 1 ] && return 0
+	uci set dhcp.@dnsmasq[0].strictorder=1
+	dns_set_servers "$want"
+	log "Ziti DNS $([ "$want" = 1 ] && echo added to || echo removed from) dnsmasq"
 }
 
 dns_restore() {
 	[ -e "$DNS_SAVED" ] || return 0
-	local o v
-	dns_servers_del
-	while read -r o v; do
-		if [ "$v" = "-" ]; then uci -q delete "dhcp.@dnsmasq[0].$o"; else uci set "dhcp.@dnsmasq[0].$o=$v"; fi
-	done < "$DNS_SAVED"
+	local v
+	uci -q del_list "dhcp.@dnsmasq[0].server=$DNS_IP"
+	v=$(awk '$1 == "strictorder" {print $2}' "$DNS_SAVED")
+	if [ "$v" = "-" ]; then uci -q delete dhcp.@dnsmasq[0].strictorder; elif [ -n "$v" ]; then uci set "dhcp.@dnsmasq[0].strictorder=$v"; fi
 	uci commit dhcp
-	rm -f "$DNS_SAVED" "$DNS_SAVED.servers"
+	rm -f "$DNS_SAVED"
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
+
+dnsmasq_conf_dir() { sed -n 's/^conf-dir=\([^,]*\).*/\1/p' /var/etc/dnsmasq.conf.* 2>/dev/null | head -n 1; }
+
+# ---- names of the fabric ----
+# The tunnel finds its controllers and routers through the router's DNS, every time it
+# connects. A service that intercepts their names, *.org for one, would make the Ziti
+# resolver answer them, and the tunnel would then reach its own fabric through itself.
+# dnsmasq therefore sends these names past the resolver, to the servers the router would
+# ask for them anyway.
+
+# Controller and router URLs from the dump: the controllers learned at run time and the
+# routers the tunnel connects to. Kept while the tunnel is down.
+remember_fabric_names() {
+	local tmp
+	tmp=$(mktemp) || return 0
+	grep -oE '(\]|online\[[YN]\]) https://[^ \\"]+|address\[tls://[^]]+' "$1" \
+		| sed -e 's/^.* //' -e 's/^address\[//' | sort -u > "$tmp"
+	if [ -s "$tmp" ] && ! cmp -s "$tmp" "$FABRIC_NAMES"; then mv "$tmp" "$FABRIC_NAMES"; else rm -f "$tmp"; fi
+}
+
+fabric_names() {
+	local url host
+	{ list_controllers; cat "$FABRIC_NAMES" 2>/dev/null; } | while IFS= read -r url; do
+		host=$(url_host "$url")
+		case "$host" in ''|*:*|\[*) continue ;; esac
+		is_ipv4 "$host" || echo "$host"
+	done | sort -u
+}
+
+wan_dns() {
+	local f
+	[ "$(uci -q get dhcp.@dnsmasq[0].noresolv)" = 1 ] && return 0
+	f=$(uci -q get dhcp.@dnsmasq[0].resolvfile)
+	awk '$1 == "nameserver" {print $2}' "${f:-/tmp/resolv.conf.d/resolv.conf.auto}" 2>/dev/null
+}
+
+# The servers dnsmasq would ask for a name without the Ziti resolver. As in dnsmasq, the
+# most specific domain rule decides: its servers, the standard servers for #, and none for
+# a rule without a server, which keeps the name local. Without a domain rule: the user's
+# plain servers and the WAN resolv file. *.example.org covers only names under it.
+fabric_servers() {
+	local name s rule srv d sub best=0 found="" plain=""
+	name=$(echo "$1" | tr 'A-Z' 'a-z')
+	for s in $(dns_servers); do
+		case "$s" in
+			"$DNS_IP") ;;
+			/*)
+				rule=${s#/}
+				srv=${rule##*/}
+				rule=$(echo "${rule%/*}" | tr 'A-Z/' 'a-z ')
+				for d in $rule; do
+					sub=0
+					case "$d" in '*.'*) d=${d#\*.}; sub=1 ;; .*) d=${d#.} ;; esac
+					case "$name" in *".$d") ;; "$d") [ "$sub" = 0 ] || continue ;; *) continue ;; esac
+					if [ "${#d}" -gt "$best" ]; then best=${#d}; found="${srv:--}"
+					elif [ "${#d}" -eq "$best" ]; then found="$found ${srv:--}"; fi
+				done
+				;;
+			*) plain="$plain $s" ;;
+		esac
+	done
+	# shellcheck disable=SC2046,SC2086
+	if [ "$best" = 0 ]; then
+		printf '%s\n' $plain $(wan_dns)
+	else
+		for s in $found; do
+			case "$s" in '#') printf '%s\n' $plain $(wan_dns) ;; -) ;; *) echo "$s" ;; esac
+		done
+	fi | awk 'NF && !seen[$0]++'
+}
+
+# Rewritten only on a change: new DNS on the router, a new controller or router.
+# With no server known, no rule is better than a wrong one.
+fabric_dns_sync() {
+	local dir file tmp name s
+	dir=$(dnsmasq_conf_dir)
+	[ -n "$dir" ] || return 0
+	file="$dir/ziti-fabric.conf"
+	tmp=$(mktemp) || return 0
+	fabric_names | while IFS= read -r name; do
+		for s in $(fabric_servers "$name"); do
+			echo "server=/$name/$s"
+		done
+	done > "$tmp"
+	if [ -s "$tmp" ]; then
+		if ! cmp -s "$tmp" "$file"; then
+			cp "$tmp" "$file"
+			/etc/init.d/dnsmasq restart >/dev/null 2>&1
+			log "updated DNS rules for controller and router names: $(wc -l < "$tmp")"
+		fi
+	elif [ -e "$file" ]; then
+		rm -f "$file"
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	fi
+	rm -f "$tmp"
+}
+
+fabric_dns_off() {
+	local dir
+	dir=$(dnsmasq_conf_dir)
+	[ -n "$dir" ] && [ -e "$dir/ziti-fabric.conf" ] || return 0
+	rm -f "$dir/ziti-fabric.conf"
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 }
 
@@ -200,7 +272,19 @@ remember_service_names() {
 	if cmp -s "$tmp" "$SERVICE_NAMES"; then rm -f "$tmp"; else mv "$tmp" "$SERVICE_NAMES"; fi
 }
 
-dnsmasq_conf_dir() { sed -n 's/^conf-dir=\([^,]*\).*/\1/p' /var/etc/dnsmasq.conf.* 2>/dev/null | head -n 1; }
+# The tunnel's routes are gone as soon as its process is, so blocking works from a copy.
+# Kept on flash for the same reason as the names. Written only while routes exist.
+remember_service_prefixes() {
+	local tmp fam p
+	tmp=$(mktemp) || return 0
+	for fam in -4 -6; do
+		ip "$fam" route show table main | awk '/ dev ziti0/ {print $1}' | while read -r p; do
+			case "$p" in "$DNS_NET"|198.18.*|fe80*|ff00*) continue ;; esac
+			echo "$fam $p"
+		done
+	done | sort -u > "$tmp"
+	if [ ! -s "$tmp" ] || cmp -s "$tmp" "$SERVICE_PREFIXES"; then rm -f "$tmp"; else mv "$tmp" "$SERVICE_PREFIXES"; fi
+}
 
 block_names() {
 	local dir file tmp
@@ -233,7 +317,11 @@ bypass_load() {
 	fi
 }
 
-bypass_active() { bypass_load; ip rule show | grep -q "^$RULE_PRIORITY:"; }
+bypass_rule() { ip "$1" rule show 2>/dev/null | grep -Eq "^$RULE_PRIORITY:.*lookup $TABLE( |\$)"; }
+bypass_active() { bypass_load; bypass_rule -4 || bypass_rule -6; }
+
+# The main table without its expiry counters, which change on every look.
+bypass_source() { ip "$1" route show table main | sed 's/ expires [0-9]*sec//'; }
 
 bypass_fill() {
 	local fam="$1" block="$2" r p
@@ -243,39 +331,51 @@ bypass_fill() {
 		ip "$fam" route add table "$TABLE" $r 2>/dev/null
 	done
 	[ "$block" = 1 ] || return 0
-	ip "$fam" route show table main | awk '/ dev ziti0/ {print $1}' | while read -r p; do
-		case "$p" in "$DNS_NET"|198.18.*|fe80*|ff00*) continue ;; esac
+	awk -v f="$fam" '$1 == f {print $2}' "$SERVICE_PREFIXES" 2>/dev/null | while read -r p; do
 		ip "$fam" route replace table "$TABLE" unreachable "$p" 2>/dev/null
 	done
 }
 
+# Called on every check while the bypass is on. The table is refilled only when the main
+# table changes: a refill empties it for a moment, and traffic would fall through to main.
 bypass_on() {
-	local block=0 fam
+	local block=0 fam sum
 	bypass_load
 	cfg_block && block=1
-	for fam in -4 -6; do
-		bypass_fill "$fam" "$block"
-	done
+	remember_service_prefixes
+	sum=$({ bypass_source -4; bypass_source -6; echo "$block"; cat "$SERVICE_PREFIXES" 2>/dev/null; } | md5sum)
+	if ! bypass_active || [ "$sum" != "$(cat "$BYPASS_FILE.sum" 2>/dev/null)" ]; then
+		for fam in -4 -6; do
+			bypass_fill "$fam" "$block"
+		done
+		echo "$sum" > "$BYPASS_FILE.sum"
+	fi
 	# Addresses for service names stay on the tunnel, so its resolver can be checked.
 	ip link show ziti0 >/dev/null 2>&1 && ip route replace table "$TABLE" "$DNS_NET" dev ziti0 2>/dev/null
 	if ! bypass_active; then
-		ip rule add priority "$RULE_PRIORITY" lookup "$TABLE"
-		ip -6 rule add priority "$RULE_PRIORITY" lookup "$TABLE" 2>/dev/null
+		# The watchdog's own checks bind to ziti0 and skip the table, whose blocking routes
+		# would otherwise refuse them, and the tunnel could never be seen to recover.
+		for fam in -4 -6; do
+			ip "$fam" rule add priority "$RULE_PRIORITY" oif ziti0 lookup main 2>/dev/null
+			ip "$fam" rule add priority "$RULE_PRIORITY" lookup "$TABLE" 2>/dev/null
+		done
 		echo "$TABLE $RULE_PRIORITY" > "$BYPASS_FILE"
-		log "tunnel is out of the way: $1"
+		log "bypass on: $1"
 	fi
 	block_names "$block"
 }
 
 bypass_off() {
+	local fam
 	bypass_active || return 0
-	ip rule del priority "$RULE_PRIORITY" lookup "$TABLE" 2>/dev/null
-	ip -6 rule del priority "$RULE_PRIORITY" lookup "$TABLE" 2>/dev/null
-	ip route flush table "$TABLE" 2>/dev/null
-	ip -6 route flush table "$TABLE" 2>/dev/null
-	rm -f "$BYPASS_FILE"
+	for fam in -4 -6; do
+		ip "$fam" rule del priority "$RULE_PRIORITY" oif ziti0 lookup main 2>/dev/null
+		ip "$fam" rule del priority "$RULE_PRIORITY" lookup "$TABLE" 2>/dev/null
+		ip "$fam" route flush table "$TABLE" 2>/dev/null
+	done
+	rm -f "$BYPASS_FILE" "$BYPASS_FILE.sum"
 	block_names 0
-	log "tunnel is back in use"
+	log "bypass off"
 }
 
 # ---- checks ----
@@ -283,7 +383,7 @@ bypass_off() {
 resolver_answers() {
 	local tmp rc
 	tmp=$(mktemp) || return 1
-	bounded "$tmp" "$(cfg_num watchdog_dns_timeout 5)" nslookup ziti-probe.invalid "$DNS_IP"
+	bounded "$tmp" "$(cfg_num watchdog_dns_timeout 3)" nslookup ziti-probe.invalid "$DNS_IP"
 	grep -qE "can't find|^Name:|^Address" "$tmp"
 	rc=$?
 	rm -f "$tmp"
@@ -374,40 +474,50 @@ last_failure() { logread -e ziti-edge-tunnel -l 300 2>/dev/null | grep 'reason='
 
 # The tunneler answers a TCP connect only after the fabric dial succeeds, so a connection
 # proves the whole path. A refusal from the target or a service without terminators
-# still proves the fabric: it carried the dial and reported back. Prints ok, alive or failed.
-probe_one() {
-	local ip="$1" port="$2" before after limit connected
+# still proves the fabric: it carried the dial and reported back. Reads "host port"
+# lines and prints ok, alive or failed.
+# All addresses are tried at once, so a dead fabric costs one timeout, not one per
+# address. The first connection decides, and the other attempts are stopped.
+probe_all() {
+	local limit fifo before after host port ip r pids="" n=0 result=failed
 	limit=$(cfg_num watchdog_timeout 12)
+	fifo=$(mktemp -u) && mkfifo -m 600 "$fifo" || { echo failed; return; }
+	exec 3<>"$fifo"
+	rm -f "$fifo"
 	before=$(last_failure)
-	# Only the connect time matters: the service may not speak HTTP.
-	connected=$(curl -s -o /dev/null --connect-timeout "$limit" -m "$limit" --interface ziti0 \
-		-w '%{time_connect}' "http://$ip:$port/" 2>/dev/null)
-	case "$connected" in
-		''|0|0.000000) ;;
-		*) echo ok; return ;;
-	esac
-	after=$(last_failure)
-	if [ "$after" != "$before" ]; then
-		case "${after#*reason=}" in
-			*"error creating route"*dial*|*refused*|*terminator*) echo alive; return ;;
-		esac
+	while read -r host port; do
+		ip=$(resolve_v4 "$host" "$DNS_IP" | head -n 1)
+		[ -n "$ip" ] || continue
+		# Only the connect time matters: the service may not speak HTTP. One that stays
+		# silent is dropped a second after the connect, not at the timeout.
+		curl -s -o /dev/null --connect-timeout "$limit" -m "$limit" -y 1 -Y 1 --interface ziti0 \
+			-w '%{time_connect}\n' "http://$ip:$port/" >&3 2>/dev/null &
+		pids="$pids $!"
+		n=$((n + 1))
+	done
+	# BusyBox ash has read -t, in whole seconds.
+	# shellcheck disable=SC3045
+	while [ "$n" -gt 0 ] && read -r -t "$((limit + 2))" r <&3; do
+		n=$((n - 1))
+		case "$r" in ''|0|0.000000) ;; *) result=ok; break ;; esac
+	done
+	# shellcheck disable=SC2086
+	[ -z "$pids" ] || { kill $pids 2>/dev/null; wait $pids 2>/dev/null; }
+	exec 3<&-
+	if [ "$result" != ok ]; then
+		after=$(last_failure)
+		if [ "$after" != "$before" ]; then
+			case "${after#*reason=}" in
+				*"error creating route"*dial*|*refused*|*terminator*) result=alive ;;
+			esac
+		fi
 	fi
-	echo failed
+	echo "$result"
 }
 
-# The public address as seen through the tunnel. The Ziti resolver answers the name:
-# dnsmasq no longer asks it during a bypass, and its other answers avoid the tunnel.
-exit_ip() {
-	local url host ip
-	url=$(cfg_verify_url)
-	host=$(url_host "$url")
-	ip=$(resolve_v4 "$host" "$DNS_IP" | head -n 1)
-	curl -s -m "$(cfg_num verify_timeout 8)" --interface ziti0 --connect-to "$host::${ip:-$host}:" "$url" 2>/dev/null
-}
-
-# Prints the health of the tunnel as one state word, and leaves service names cached.
+# Prints the health of the tunnel as one state word, and leaves service and fabric names cached.
 tunnel_health() {
-	local status dump auth=0 conn=0 targets host port limit r passed=0 strict=0 expect ip
+	local status dump auth=0 conn=0 targets limit r passed=0 strict=0
 	status=$(mktemp) && dump=$(mktemp) || { echo healthy; return; }
 	limit=$(cfg_status_timeout)
 	if ! bounded "$status" "$limit" "$ZET" tunnel_status || ! bounded "$dump" "$limit" "$ZET" dump; then
@@ -415,6 +525,7 @@ tunnel_health() {
 		echo hung
 		return
 	fi
+	remember_fabric_names "$dump"
 	# Every identity turned off: nothing is wrong, and nothing can be checked.
 	if ! jsonfilter -i "$status" -e '@.Data.Identities[@.Active=true].Name' 2>/dev/null | grep -q .; then
 		rm -f "$status" "$dump"
@@ -435,31 +546,19 @@ tunnel_health() {
 		return
 	fi
 	remember_service_names "$status"
+	remember_service_prefixes
 	refresh_probe_pool "$status"
 	rm -f "$status" "$dump"
 	# Addresses set by hand stand for a resource that must work, so only a real answer counts.
 	[ -n "$(explicit_targets)" ] && strict=1
 	targets=$(probe_targets)
 	if [ -n "$targets" ]; then
-		while read -r host port; do
-			ip=$(resolve_v4 "$host" "$DNS_IP" | head -n 1)
-			r=failed
-			[ -n "$ip" ] && r=$(probe_one "$ip" "$port")
-			if [ "$r" = ok ] || { [ "$r" = alive ] && [ "$strict" = 0 ]; }; then
-				passed=1
-				break
-			fi
-		done <<-EOF
-			$targets
-		EOF
+		r=$(echo "$targets" | probe_all)
+		if [ "$r" = ok ] || { [ "$r" = alive ] && [ "$strict" = 0 ]; }; then passed=1; fi
 		if [ "$passed" = 0 ]; then
 			wan_up && echo no-data || echo no-internet
 			return
 		fi
-	fi
-	expect=$(uci_get verify_expect_ip)
-	if [ -n "$expect" ]; then
-		[ "$(exit_ip)" = "$expect" ] || { echo no-data; return; }
 	fi
 	echo healthy
 }
@@ -469,7 +568,7 @@ wan_up() {
 	local dev p limit
 	dev=$(ip route show table main default | awk '{for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 	[ -n "$dev" ] || return 1
-	limit=$(cfg_num watchdog_wan_timeout 4)
+	limit=$(cfg_num watchdog_wan_timeout 3)
 	for p in $(cfg_wan_probes); do
 		curl -s -k -m "$limit" --interface "$dev" -o /dev/null "https://$p/" 2>/dev/null && return 0
 	done
@@ -480,7 +579,7 @@ in_grace() {
 	local started now
 	started=$(cat "$START_MARK" 2>/dev/null) || return 1
 	now=$(date +%s)
-	[ $((now - ${started:-0})) -lt "$(cfg_num watchdog_grace 20)" ]
+	[ $((now - ${started:-0})) -lt "$(cfg_num watchdog_grace 15)" ]
 }
 
 # ---- watchdog ----
@@ -488,8 +587,8 @@ in_grace() {
 RESTART_STEP=0
 NEXT_RESTART=0
 restart_delay() {
-	local i=0 d last=60
-	for d in $(cfg_list watchdog_restart_delays "60 300 900 1800"); do
+	local i=0 d last=30
+	for d in $(cfg_list watchdog_restart_delays "30 120 600 1800"); do
 		case "$d" in ''|*[!0-9]*) continue ;; esac
 		last=$d
 		[ "$i" = "$1" ] && break
@@ -512,30 +611,42 @@ restart_tunnel() {
 	"$INIT" restart >/dev/null 2>&1
 }
 
+# The process is gone, but nobody stopped it: it was started, and Stop was not pressed.
+tunnel_crashed() { [ -e "$START_MARK" ] && [ ! -e "$STOP_MARK" ] && [ -n "$(list_identities)" ]; }
+
 cmd_watchdog() {
 	local interval fails recover health bad=0 good=0
 	log "watchdog started"
-	bypass_active && log "bypass was left on, keeping it until the tunnel is healthy"
+	bypass_active && log "bypass already enabled; waiting for tunnel recovery"
 	while true; do
-		interval=$(cfg_num watchdog_interval 10)
+		interval=$(cfg_num watchdog_interval 5)
 		fails=$(cfg_num watchdog_fails 3)
 		recover=$(cfg_num watchdog_recover 2)
+		fabric_dns_sync
+		firewall_sync
 
+		# The state is written before the changes: a dnsmasq restart takes a few seconds.
 		if ! tunnel_running; then
-			# The tun device and its routes are gone with the process.
-			bypass_off
+			if [ -z "$(list_identities)" ]; then set_state no-identities
+			elif tunnel_crashed; then set_state crashed
+			else set_state stopped; fi
+			# The tun device and its routes are gone with the process, and traffic to services
+			# would go directly until procd starts it again. Blocking holds it back meanwhile.
+			# Stop, by hand, is the user's choice and lifts the blocking.
+			if tunnel_crashed && cfg_enabled && cfg_block; then
+				bypass_on crashed
+			else
+				bypass_off
+			fi
 			dns_sync 0
 			RESTART_STEP=0
 			NEXT_RESTART=0
 			bad=0
 			good=0
-			if [ -z "$(list_identities)" ]; then set_state no-identities
-			elif in_grace && [ ! -e "$STOP_MARK" ]; then set_state starting
-			else set_state stopped; fi
 		elif ! cfg_enabled; then
+			set_state unchecked
 			bypass_off
 			resolver_answers && dns_sync 1 || dns_sync 0
-			set_state unchecked
 		elif in_grace; then
 			set_state starting
 		else
@@ -546,26 +657,22 @@ cmd_watchdog() {
 				RESTART_STEP=0
 				NEXT_RESTART=0
 				if [ "$good" -ge "$recover" ]; then
+					set_state healthy
 					bypass_off
 					resolver_answers && dns_sync 1 || dns_sync 0
+				elif ! bypass_active; then
+					set_state healthy
 				fi
-				bypass_active || set_state healthy
 			else
 				good=0
 				bad=$((bad + 1))
 				if [ "$health" = hung ] || [ "$bad" -ge "$fails" ]; then
+					set_state "$health"
 					bypass_on "$health"
 					dns_sync 0
-					set_state "$health"
 				fi
 				case "$health" in
-					no-connection)
-						refresh_hosts
-						restart_due && restart_tunnel "$health"
-						;;
-					hung)
-						restart_due && restart_tunnel "$health"
-						;;
+					no-connection|hung) restart_due && restart_tunnel "$health" ;;
 				esac
 			fi
 			# The WAN gateway can change while the bypass is on.
@@ -576,7 +683,8 @@ cmd_watchdog() {
 }
 
 # ---- identities ----
-json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# Control characters are dropped: JSON does not allow them raw.
+json_str() { printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 # Prints a JSON array. The runtime file keeps names and on/off across stops.
 identities_json() {
@@ -642,19 +750,19 @@ enroll_failure() {
 }
 
 cmd_enroll() {
-	local jwt="$1" id out
-	id="identity-$(date +%s)"
+	local jwt="$1" id out logf
+	# The process id keeps two enrollments in the same second apart.
+	id="identity-$(date +%s)-$$"
 	out="$IDENT_DIR/$id.json"
-	"$ZET" enroll --jwt "$jwt" --identity "$out" >/tmp/ziti-enroll.log 2>&1
-	if [ ! -s "$out" ]; then
+	logf=/tmp/ziti-enroll.$$.log
+	if ! "$ZET" enroll --jwt "$jwt" --identity "$out" >"$logf" 2>&1 || [ ! -s "$out" ]; then
 		rm -f "$out"
-		enroll_failure /tmp/ziti-enroll.log
-		rm -f /tmp/ziti-enroll.log
+		enroll_failure "$logf"
+		rm -f "$logf"
 		return 1
 	fi
-	rm -f /tmp/ziti-enroll.log
+	rm -f "$logf"
 	chmod 0600 "$out"
-	refresh_hosts
 	# The tunneler reads the identity directory only when it starts.
 	"$INIT" restart >/dev/null 2>&1
 	echo "$id"
@@ -681,6 +789,46 @@ cmd_identity_remove() {
 # ---- install ----
 zone_exists() { uci -q show firewall | grep -q "\.name='ziti'"; }
 
+own_forwardings() { uci -q show firewall | sed -n "s/^firewall\.\(${FORWARDING}[A-Za-z0-9_]*\)=forwarding\$/\1/p"; }
+
+# True if a forwarding from zone $1 into ziti exists, the user's own included.
+forwarding_exists() {
+	local s
+	for s in $(uci -q show firewall | sed -n 's/^firewall\.\([^.=]*\)=forwarding$/\1/p'); do
+		[ "$(uci -q get "firewall.$s.src")" = "$1" ] && [ "$(uci -q get "firewall.$s.dest")" = ziti ] && return 0
+	done
+	return 1
+}
+
+# Forwardings into ziti from the zones in source_zones. A zone that does not exist is
+# skipped, and a forwarding the user made is left alone. Runs on every check, so a
+# changed setting applies without a restart.
+firewall_sync() {
+	local z s want changed=0
+	want=" $(cfg_zones) "
+	zone_exists || return 0
+	for z in $want; do
+		case "$z" in *[!A-Za-z0-9_]*) continue ;; esac
+		s="$FORWARDING$z"
+		uci -q get "firewall.$s" >/dev/null && continue
+		uci -q show firewall | grep -q "\.name='$z'\$" || continue
+		forwarding_exists "$z" && continue
+		uci set "firewall.$s=forwarding"
+		uci set "firewall.$s.src=$z"
+		uci set "firewall.$s.dest=ziti"
+		changed=1
+	done
+	for s in $(own_forwardings); do
+		case "$want" in *" ${s#"$FORWARDING"} "*) continue ;; esac
+		uci -q delete "firewall.$s"
+		changed=1
+	done
+	[ "$changed" = 1 ] || return 0
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+	log "forwarding into ziti from zones: $(own_forwardings | sed "s/^$FORWARDING//" | tr '\n' ' ')"
+}
+
 cmd_setup() {
 	local changed=0
 	if ! zone_exists; then
@@ -694,31 +842,28 @@ cmd_setup() {
 		uci set "firewall.$ZONE.mtu_fix=1"
 		changed=1
 	fi
-	if ! uci -q show firewall | grep -A1 "src='lan'" | grep -q "dest='ziti'"; then
-		uci set "firewall.$FORWARDING=forwarding"
-		uci set "firewall.$FORWARDING.src=lan"
-		uci set "firewall.$FORWARDING.dest=ziti"
-		changed=1
-	fi
 	if [ "$changed" = 1 ]; then
 		uci commit firewall
 		/etc/init.d/firewall reload >/dev/null 2>&1
 	fi
+	firewall_sync
 	dns_sync 0
-	refresh_hosts
+	fabric_dns_sync
 }
 
 cmd_uninstall() {
-	local tmp
 	bypass_off
 	block_names 0
+	fabric_dns_off
 	dns_restore
-	uci -q delete "firewall.$FORWARDING"
+	local s
+	for s in $(own_forwardings); do
+		uci -q delete "firewall.$s"
+	done
 	uci -q delete "firewall.$ZONE"
 	uci commit firewall
 	/etc/init.d/firewall reload >/dev/null 2>&1
-	tmp=$(mktemp) && strip_managed_block > "$tmp" && cat "$tmp" > "$HOSTS_FILE"
-	rm -f "$tmp" "$SERVICE_NAMES" "$PROBE_POOL" "$PROBE_POOL.sum"
+	rm -f "$SERVICE_NAMES" "$SERVICE_PREFIXES" "$PROBE_POOL" "$PROBE_POOL.sum" "$FABRIC_NAMES"
 }
 
 # For a look at what the watchdog would check. A status file stands in for the live tunnel.
@@ -752,8 +897,7 @@ case "${1:-}" in
 	enroll)          cmd_enroll "${2:?jwt file}" ;;
 	identity-set)    cmd_identity_set "${2:?id}" "${3:?0 or 1}" ;;
 	identity-remove) cmd_identity_remove "${2:?id}" ;;
-	refresh-hosts)   refresh_hosts ;;
 	setup)           cmd_setup ;;
 	uninstall)       cmd_uninstall ;;
-	*) echo "usage: ziti-boot-guard {watchdog|state|probes|identities|enroll|identity-set|identity-remove|refresh-hosts|setup|uninstall}" >&2; exit 2 ;;
+	*) echo "usage: ziti-boot-guard {watchdog|state|probes|identities|enroll|identity-set|identity-remove|setup|uninstall}" >&2; exit 2 ;;
 esac

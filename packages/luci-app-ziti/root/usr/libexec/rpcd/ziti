@@ -10,13 +10,16 @@
 #
 # Methods are listed at the bottom of this file. enroll receives the raw JWT, keeps
 # it in a private file under a root-only directory, and always removes that file.
+# enroll, check_update and upgrade_zet answer at once and run in the background;
+# job_status gives their answer.
 
 set -u
 
 ZET_BIN="/usr/bin/ziti-edge-tunnel"
 GUARD="/usr/libexec/ziti-boot-guard"
 INIT="/etc/init.d/ziti-edge-tunnel"
-JWT_STAGE_DIR="/etc/ziti/.jwt-stage"
+JWT_STAGE_DIR="/var/run/ziti-jwt"
+JOB_DIR="/var/run/ziti-job"
 
 # ---------- helpers ----------
 
@@ -41,6 +44,46 @@ emit_error() {
 	printf '{"error":{"code":"%s","message":"%s"}}\n' "$1" "$2"
 }
 
+# ---------- background jobs ----------
+# LuCI gives up on a request after 20 seconds, and enrollment or an upgrade can take
+# longer. One job runs at a time; its JSON answer stays until the next one starts.
+
+# A written result means the job is done: without procd to reap it, as in a container,
+# the finished process lingers as a zombie, and kill -0 still finds it.
+job_running() {
+	[ ! -e "$JOB_DIR/result" ] && [ -s "$JOB_DIR/pid" ] && kill -0 "$(cat "$JOB_DIR/pid")" 2>/dev/null
+}
+
+# job_start <name> <function> [args...]
+job_start() {
+	local name="$1"
+	shift
+	if job_running; then
+		emit_error "busy" "$(cat "$JOB_DIR/name" 2>/dev/null)"
+		return 1
+	fi
+	mkdir -p "$JOB_DIR"
+	chmod 0700 "$JOB_DIR"
+	rm -f "$JOB_DIR/result"
+	echo "$name" > "$JOB_DIR/name"
+	( "$@" > "$JOB_DIR/result.new" 2>/dev/null; mv "$JOB_DIR/result.new" "$JOB_DIR/result" ) \
+		</dev/null >/dev/null 2>&1 &
+	echo "$!" > "$JOB_DIR/pid"
+	printf '{"ok":true,"job":"%s"}\n' "$name"
+}
+
+method_job_status() {
+	local name
+	name=$(cat "$JOB_DIR/name" 2>/dev/null)
+	if job_running; then
+		printf '{"running":true,"job":"%s"}\n' "$name"
+	elif [ -s "$JOB_DIR/result" ]; then
+		printf '{"running":false,"job":"%s","result":%s}\n' "$name" "$(cat "$JOB_DIR/result")"
+	else
+		printf '{"running":false,"job":"%s"}\n' "$name"
+	fi
+}
+
 # ---------- methods ----------
 
 method_status() {
@@ -60,7 +103,7 @@ method_list_identities() {
 }
 
 method_enroll() {
-	local args jwt jwt_file out rc code message=""
+	local args jwt jwt_file
 	args="$(cat)"
 	jwt=$(printf '%s' "$args" | jsonfilter -e '@.jwt' 2>/dev/null)
 	if [ -z "$jwt" ]; then
@@ -68,18 +111,26 @@ method_enroll() {
 		return
 	fi
 
-	# Private staging dir, not world-readable /tmp. JWTs are one-time secrets.
+	# A private directory in RAM: JWTs are one-time secrets, and a file left behind by a
+	# killed call stays out of flash and backups and is gone after a reboot.
 	mkdir -p "$JWT_STAGE_DIR"
 	chmod 0700 "$JWT_STAGE_DIR"
+	# With no job running, any token here is left from a job that was killed.
+	job_running || rm -f "$JWT_STAGE_DIR"/jwt.*
 	jwt_file="$(mktemp -p "$JWT_STAGE_DIR" jwt.XXXXXX)" || {
 		emit_error "io_error" "cannot create staging file"
 		return
 	}
-	trap 'rm -f "$jwt_file"' EXIT INT TERM
 	printf '%s' "$jwt" > "$jwt_file"
+	job_start enroll do_enroll "$jwt_file" || rm -f "$jwt_file"
+}
 
-	out=$("$GUARD" enroll "$jwt_file")
+# The job owns the token file and removes it however enrollment ends.
+do_enroll() {
+	local out rc code message=""
+	out=$("$GUARD" enroll "$1")
 	rc=$?
+	rm -f "$1"
 	if [ "$rc" -ne 0 ]; then
 		# The guard prints a reason word, followed by text only for an unknown failure.
 		code=${out%% *}
@@ -143,10 +194,32 @@ _oz_feed_url() {
 	sed -n '/^[^#]/{p;q;}' /etc/apk/repositories.d/openwrt-ziti-stack.list 2>/dev/null
 }
 
-# Print the version from `apk list` lines such as
+# Print the newest version from `apk list` lines such as
 # "ziti-edge-tunnel-1.18.7-r7 aarch64_cortex-a53 {...} (...) [installed]".
+# apk lists every version it knows, the installed one included, in no useful order.
 _oz_version() {
-	sed -n 's/^ziti-edge-tunnel-\([^ ]*\) .*/\1/p' | head -n 1
+	local v best=""
+	for v in $(sed -n 's/^ziti-edge-tunnel-\([^ ]*\) .*/\1/p'); do
+		{ [ -z "$best" ] || [ "$(apk version -t "$v" "$best")" = ">" ]; } && best=$v
+	done
+	echo "$best"
+}
+
+# True if version $1 is newer than $2, or $2 is empty.
+_oz_newer() { [ -n "$1" ] && { [ -z "$2" ] || [ "$(apk version -t "$1" "$2")" = ">" ]; }; }
+
+# `apk policy` lists each known version with the repositories that have it. These print
+# the versions in the project feed, or in any other repository, as `apk list` lines.
+_oz_feed_versions() {
+	[ -n "$1" ] || return 0
+	apk policy ziti-edge-tunnel 2>/dev/null | awk -v f="$1" '
+		/^  [^ ]/ { v = $1; sub(/:$/, "", v); next }
+		$1 == f { print "ziti-edge-tunnel-" v " " }'
+}
+_oz_other_versions() {
+	apk policy ziti-edge-tunnel 2>/dev/null | awk -v f="$1" '
+		/^  [^ ]/ { v = $1; sub(/:$/, "", v); next }
+		/^    / && $1 != f && $1 !~ /installed$/ { print "ziti-edge-tunnel-" v " " }'
 }
 
 # apk verifies the index signature against /etc/apk/keys itself, but an untrusted
@@ -157,26 +230,44 @@ _oz_update_feed() {
 	case "$out" in *UNTRUSTED*) return 1 ;; esac
 }
 
-method_check_update() {
-	local installed candidate feed upgradable
+# Sets INSTALLED, CANDIDATE (newest in the project feed) and OTHER (a newer version in
+# another repository, which apk would install instead, so nothing is offered then).
+_oz_versions() {
+	local feed="$1"
+	INSTALLED=$(apk list -I ziti-edge-tunnel 2>/dev/null | _oz_version)
+	CANDIDATE=$(_oz_feed_versions "$feed" | _oz_version)
+	OTHER=$(_oz_other_versions "$feed" | _oz_version)
+	_oz_newer "$OTHER" "${CANDIDATE:-$INSTALLED}" || OTHER=""
+}
+
+method_check_update() { job_start check do_check; }
+
+do_check() {
+	local feed upgradable=false
 	feed=$(_oz_feed_url)
 	if ! _oz_update_feed; then
 		emit_error "update_failed" "apk update failed; check the network and the feed signing key"
 		return
 	fi
-	installed=$(apk list -I ziti-edge-tunnel 2>/dev/null | _oz_version)
-	candidate=$(apk list ziti-edge-tunnel 2>/dev/null | _oz_version)
-	if apk list -u ziti-edge-tunnel 2>/dev/null | grep -q '^ziti-edge-tunnel-'; then upgradable=true; else upgradable=false; fi
-	printf '{"installed":"%s","candidate":"%s","feed":"%s","verified":true,"upgradable":%s}\n' \
-		"$installed" "$candidate" "$feed" "$upgradable"
+	_oz_versions "$feed"
+	[ -z "$OTHER" ] && _oz_newer "$CANDIDATE" "$INSTALLED" && upgradable=true
+	printf '{"installed":"%s","candidate":"%s","other":"%s","feed":"%s","verified":true,"upgradable":%s}\n' \
+		"$INSTALLED" "$CANDIDATE" "$OTHER" "$feed" "$upgradable"
 }
 
-method_upgrade_zet() {
+method_upgrade_zet() { job_start upgrade do_upgrade; }
+
+do_upgrade() {
 	if ! _oz_update_feed; then
 		emit_error "update_failed" "apk update failed; check the network and the feed signing key"
 		return
 	fi
 	local out rc v
+	_oz_versions "$(_oz_feed_url)"
+	if [ -n "$OTHER" ] || ! _oz_newer "$CANDIDATE" "$INSTALLED"; then
+		emit_error "no_update" "no newer version in the project feed"
+		return
+	fi
 	out=$(apk add --upgrade ziti-edge-tunnel 2>&1); rc=$?
 	if [ $rc -ne 0 ]; then
 		emit_error "install_failed" "$(printf '%s' "$out" | json_escape)"
@@ -201,7 +292,8 @@ case "${1:-}" in
 	"service_action":   { "action": "" },
 	"set_autostart":    { "enabled": false },
 	"check_update":     { },
-	"upgrade_zet":      { }
+	"upgrade_zet":      { },
+	"job_status":       { }
 }
 EOF
 		;;
@@ -216,6 +308,7 @@ EOF
 			set_autostart)   method_set_autostart ;;
 			check_update)    method_check_update ;;
 			upgrade_zet)     method_upgrade_zet ;;
+			job_status)      method_job_status ;;
 			*)               emit_error "no_method" "unknown method" ;;
 		esac
 		;;

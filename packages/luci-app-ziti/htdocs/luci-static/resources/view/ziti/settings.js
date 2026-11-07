@@ -6,6 +6,7 @@
 'require rpc';
 'require ui';
 'require dom';
+'require tools.widgets as widgets';
 
 var callCheck = rpc.declare({
 	object: 'ziti', method: 'check_update', expect: { }
@@ -13,6 +14,36 @@ var callCheck = rpc.declare({
 var callUpgrade = rpc.declare({
 	object: 'ziti', method: 'upgrade_zet', expect: { }
 });
+var callJob = rpc.declare({
+	object: 'ziti', method: 'job_status', expect: { }
+});
+
+// Long operations run in the background on the router. This waits for their answer.
+function runJob(start) {
+	return start.then(function (res) {
+		if (!res || res.error || !res.job)
+			return res;
+		return (function poll() {
+			return new Promise(function (resolve) { window.setTimeout(resolve, 2000); }).then(function () {
+				return callJob();
+			}).then(function (st) {
+				if (st && st.running)
+					return poll();
+				return (st && st.job == res.job && st.result) || { error: { code: 'lost', message: '' } };
+			});
+		})();
+	});
+}
+
+function updateError(err) {
+	switch (err.code) {
+	case 'update_failed': return _('Cannot refresh the package lists. Check the internet connection and the feed signing key.');
+	case 'no_update':     return _('No installable update from the project feed.');
+	case 'busy':          return _('Another operation is still running. Try again when it finishes.');
+	case 'lost':          return _('The router did not return the result. Reload the page to see the current state.');
+	default:              return err.message || err.code;
+	}
+}
 
 // Headings of the page stand out from the settings around them.
 var HEADING_STYLE = 'color:var(--primary-color-high);border-bottom:1px solid var(--primary-color-high);padding-bottom:.25em';
@@ -45,7 +76,7 @@ return view.extend({
 		var m, s, o;
 
 		m = new form.Map('ziti', _('OpenZiti Settings'),
-			_('Changes apply without a restart, except the upstream DNS server: clients lose connection briefly when it changes.'));
+			_('Changes apply without restarting the tunnel.'));
 
 		// A display switch for one setting. Nothing is stored for the switch itself:
 		// the field exists only while it is ticked, and unticking removes the value.
@@ -83,27 +114,33 @@ return view.extend({
 		s.anonymous = true;
 
 		o = s.option(form.ListValue, 'log_level', _('Log level'),
-			_('Log detail level for the tunnel. Info suits normal use. Default: Info.'));
+			_('Log detail level. Info is recommended for normal use. Default: Info.'));
 		o.value('ERROR', 'Error'); o.value('WARN', 'Warning'); o.value('INFO', 'Info');
 		o.value('DEBUG', 'Debug'); o.value('VERBOSE', 'Verbose'); o.value('TRACE', 'Trace');
 		o.default = 'INFO';
 
+		o = s.option(widgets.ZoneSelect, 'source_zones', _('Source zones'),
+			_('Firewall zones whose traffic may enter the tunnel. Default: lan.'));
+		o.multiple = true;
+		o.nocreate = true;
+		o.default = 'lan';
+
 		var ws = m.section(form.NamedSection, 'main', 'ziti', _('Resilience watchdog'),
-			_('Checks the tunnel on its own. While it is broken, traffic goes around the tunnel, and the tunnel keeps trying to reconnect. When it recovers, traffic returns.'));
+			_('Automatically checks the tunnel, enables bypass on failure, and restores tunnel routing after recovery. The tunnel keeps trying to reconnect.'));
 		ws.anonymous = true;
 
 		o = ws.option(form.Flag, 'watchdog_enabled', _('Enable watchdog'),
-			_('If unchecked, the tunnel is not checked, and its services are unavailable while it is broken.'));
+			_('If disabled, the watchdog does not check the tunnel or enable bypass on failure.'));
 		o.default = '1';
 		o.rmempty = false;
 
 		o = ws.option(form.Flag, 'block_on_failure', _('Block services on failure'),
-			_('If checked, the addresses and names of services are blocked while the tunnel is broken. If unchecked, they go directly, past OpenZiti.'));
+			_('During bypass, block traffic to service addresses and names. If disabled, traffic uses the router\'s normal routes, bypassing OpenZiti.'));
 		o.default = '0';
 		o.rmempty = false;
 
 		override(ws, 'watchdog_probes', _('Check specific resources'),
-			_('If set, the watchdog connects only to these instead of the services, and one of them must really answer. Otherwise traffic goes around the tunnel. Format: address or name, with a port if needed. Default port: 443.'),
+			_('Use these resources instead of automatic service probes. At least one resource selected for each check must accept a TCP connection; otherwise the check fails. Format: address or hostname, optionally followed by a port. Default port: 443.'),
 			function (section, name) {
 				var f = section.option(form.DynamicList, name, ' ');
 				f.placeholder = '192.0.2.10:443';
@@ -114,49 +151,30 @@ return view.extend({
 				};
 				return f;
 			});
-		override(ws, 'verify_expect_ip', _('Check the exit address'),
-			_('A check passes only if the address service sees this public IP address through the tunnel. Not checked by default.'),
-			function (section, name) {
-				var f = section.option(form.Value, name, ' ');
-				f.datatype = 'ip4addr';
-				f.placeholder = '203.0.113.10';
-				return f;
-			});
 
 		var groups = [
 			[ _('Checks'), [
-				[ 'watchdog_interval', _('Override check interval'), _('Pause between checks, in seconds. Default: 10.'), number(1, '10') ],
-				[ 'watchdog_fails', _('Override failure threshold'), _('Failed checks in a row before traffic goes around the tunnel. Default: 3.'), number(1, '3') ],
-				[ 'watchdog_recover', _('Override recovery threshold'), _('Successful checks in a row before traffic returns. Default: 2.'), number(1, '2') ],
-				[ 'watchdog_grace', _('Override startup delay'), _('Delay before the first check after the tunnel starts, in seconds. Default: 20.'), number(0, '20') ],
-				[ 'watchdog_probe_count', _('Override addresses per check'), _('How many random service addresses one check tries. One answer from the fabric is enough, even if the service itself is down. Default: 3.'), number(1, '3') ]
+				[ 'watchdog_interval', _('Override check interval'), _('Pause between checks, in seconds. Default: 5.'), number(1, '5') ],
+				[ 'watchdog_fails', _('Override failure threshold'), _('Consecutive failed checks before enabling bypass. An unresponsive tunnel triggers bypass immediately. Default: 3.'), number(1, '3') ],
+				[ 'watchdog_recover', _('Override recovery threshold'), _('Consecutive successful checks before restoring tunnel routing. Default: 2.'), number(1, '2') ],
+				[ 'watchdog_grace', _('Override startup delay'), _('Delay before the first check after the tunnel starts, in seconds. Default: 15.'), number(0, '15') ],
+				[ 'watchdog_probe_count', _('Override addresses per check'), _('Maximum number of randomly selected addresses per check. For automatic service probes, an OpenZiti network response is enough, even if the service is down. Default: 3.'), number(1, '3') ]
 			] ],
 			[ _('Timeouts'), [
-				[ 'watchdog_timeout', _('Override connection timeout'), _('Time to wait for a connection to one address, in seconds. The fabric reports a failed connection after about 10 seconds, so the minimum is 11. Default: 12.'), number(11, '12') ],
-				[ 'watchdog_status_timeout', _('Override tunnel response timeout'), _('Time to wait for the tunnel to report its state, in seconds. No answer means it is frozen. Default: 4.'), number(1, '4') ],
-				[ 'watchdog_wan_timeout', _('Override internet check timeout'), _('Time to wait for one internet check address, in seconds. Default: 4.'), number(1, '4') ],
-				[ 'watchdog_dns_timeout', _('Override DNS check timeout'), _('Time to wait for a DNS answer, in seconds. Default: 5.'), number(1, '5') ],
-				[ 'verify_timeout', _('Override exit check timeout'), _('Time to wait for the exit address service, in seconds. Default: 8.'), number(1, '8') ]
+				[ 'watchdog_timeout', _('Override connection timeout'), _('Connection timeout per address, in seconds. The OpenZiti network reports a failed connection after about 10 seconds, so the minimum is 11. Default: 12.'), number(11, '12') ],
+				[ 'watchdog_status_timeout', _('Override tunnel response timeout'), _('Timeout for each tunnel status request, in seconds. A failed request or timeout marks the tunnel as unresponsive. Default: 4.'), number(1, '4') ],
+				[ 'watchdog_wan_timeout', _('Override internet check timeout'), _('Time to wait for one internet check address, in seconds. Default: 3.'), number(1, '3') ],
+				[ 'watchdog_dns_timeout', _('Override DNS check timeout'), _('Time to wait for a DNS answer, in seconds. Default: 3.'), number(1, '3') ]
 			] ],
 			[ _('Restarts'), [
-				[ 'watchdog_restart_delays', _('Override restart delays'), _('Delays before each restart while there is no connection or the tunnel is frozen, in seconds. The last one repeats. Default: 60, 300, 900, 1800.'), list('uinteger', '60') ]
+				[ 'watchdog_restart_delays', _('Override restart delays'), _('Delays before restart attempts when the tunnel is unresponsive or disconnected despite internet access, in seconds. The last delay repeats. Default: 30, 120, 600, 1800.'), list('uinteger', '30') ]
 			] ],
-			[ _('Internet and exit'), [
-				[ 'watchdog_wan_probes', _('Override internet check addresses'), _('Addresses checked outside the tunnel, to tell a lost internet connection from a fabric failure. Default: 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222.'), list('ipaddr', '1.1.1.1') ],
-				[ 'verify_url', _('Override exit address service'), _('Service that returns the public IP address, for the exit address check. Default: https://api.ipify.org.'), function (section, name) {
-					var f = section.option(form.Value, name, ' ');
-					f.placeholder = 'https://api.ipify.org';
-					f.validate = function (section_id, value) {
-						if (value == '' || /^https?:\/\/\S+$/.test(value))
-							return true;
-						return _('Enter a URL that starts with http:// or https://');
-					};
-					return f;
-				} ]
+			[ _('Internet check'), [
+				[ 'watchdog_wan_probes', _('Override internet check addresses'), _('Addresses checked outside the tunnel to distinguish an internet outage from an OpenZiti network failure. Default: 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222.'), list('ip4addr', '1.1.1.1') ]
 			] ],
 			[ _('Bypass'), [
-				[ 'bypass_table', _('Override bypass routing table'), _('Routing table for traffic that goes around the tunnel. Takes effect the next time traffic goes around it. Default: 1890.'), number(256, '1890') ],
-				[ 'bypass_priority', _('Override bypass rule priority'), _('Priority of the routing rule that sends traffic to that table. Takes effect the next time traffic goes around the tunnel. Default: 100.'), number(1, '100', 32765) ]
+				[ 'bypass_table', _('Override bypass routing table'), _('Routing table used for bypass. Changes take effect the next time bypass is enabled. Default: 1890.'), number(256, '1890') ],
+				[ 'bypass_priority', _('Override bypass rule priority'), _('Priority of the routing rule that selects the bypass table. Changes take effect the next time bypass is enabled. Default: 100.'), number(1, '100', 32765) ]
 			] ]
 		];
 
@@ -172,38 +190,18 @@ return view.extend({
 			g[1].forEach(function (a) { override(as, a[0], a[1], a[2], a[3]); });
 		});
 
-		var ds = m.section(form.NamedSection, 'main', 'ziti', _('DNS'),
-			_('dnsmasq asks OpenZiti first, so service names work without further setup. While the tunnel is broken, it uses the fallback servers.'));
-		ds.anonymous = true;
-
-		override(ds, 'dns_fallback_servers', _('Override fallback DNS servers'),
-			_('Used when OpenZiti has no answer or the tunnel is broken. Default: 1.1.1.1, 8.8.8.8.'),
-			list('ipaddr', '1.1.1.1'));
-		override(ds, 'dns_upstream', _('Override upstream DNS server'),
-			_('DNS server for names that are not OpenZiti services. If it is reachable only through the overlay, it needs its own service. Enter none to refuse such names. Default: 1.1.1.1.'),
-			function (section, name) {
-				var f = section.option(form.Value, name, ' ');
-				f.placeholder = '1.1.1.1';
-				f.validate = function (section_id, value) {
-					if (value == '' || value == 'none' || /^(\d{1,3}\.){3}\d{1,3}$/.test(value))
-						return true;
-					return _('Enter an IPv4 address or none');
-				};
-				return f;
-			});
-
 		var results = E('div', {},
 			[ E('em', {}, _('Click "Check for updates" to query the signed feed.')) ]);
 
 		function doUpgrade(candidate) {
-			if (!confirm(_('Upgrade the tunnel to %s and restart it? Clients lose connection briefly.').format(candidate)))
+			if (!confirm(_('Upgrade the tunnel to %s and restart it?').format(candidate)))
 				return;
 			ui.showModal(_('Upgrading'), [ E('p', { 'class': 'spinning' },
 				_('Verifying the feed signature, installing and restarting the tunnel...')) ]);
-			return callUpgrade().then(function (res) {
+			return runJob(callUpgrade()).then(function (res) {
 				ui.hideModal();
 				if (res && res.error)
-					return ui.addNotification(null, E('p', {}, _('Upgrade failed: ') + (res.error.message || res.error.code)), 'danger');
+					return ui.addNotification(null, E('p', {}, _('Upgrade failed: ') + updateError(res.error)), 'danger');
 				ui.addNotification(null, E('p', {}, _('Upgraded to %s. Reloading...').format((res && res.version) || '')), 'info');
 				window.setTimeout(function () { location.reload(); }, 3000);
 			}).catch(function (e) {
@@ -215,23 +213,26 @@ return view.extend({
 		function doCheck() {
 			ui.showModal(_('Checking'), [ E('p', { 'class': 'spinning' },
 				_('Refreshing the feed and verifying its signature...')) ]);
-			return callCheck().then(function (r) {
+			return runJob(callCheck()).then(function (r) {
 				ui.hideModal();
 				r = r || {};
 				if (r.error) {
 					dom.content(results, E('div', { 'class': 'alert-message warning' },
-						_('Check failed: ') + (r.error.message || r.error.code)));
+						_('Check failed: ') + updateError(r.error)));
 					return;
 				}
 				var upgradable = !!r.upgradable;
 				var kids = [
 					E('div', {}, [ _('Feed: '), E('code', {}, r.feed || _('(none configured)')) ]),
 					E('div', {}, [ _('Signature: '), r.verified
-						? E('span', { 'style': 'color:#5aa726;font-weight:bold' }, _('verified (signed by the project)'))
+						? E('span', { 'style': 'color:#5aa726;font-weight:bold' }, _('verified by apk'))
 						: E('span', { 'style': 'color:#c44;font-weight:bold' }, _('NOT verified')) ]),
 					E('div', {}, [ _('Installed: '), E('strong', {}, r.installed || _('?')),
 						_('  Newest in feed: '), E('strong', {}, r.candidate || _('?')) ])
 				];
+				if (r.other)
+					kids.push(E('div', { 'class': 'alert-message warning' },
+						_('Version %s in another repository is newer. Only updates from the project feed are offered.').format(r.other)));
 				if (upgradable && r.verified)
 					kids.push(E('div', { 'style': 'margin-top:.5em' }, [
 						E('button', { 'class': 'btn cbi-button cbi-button-positive',
@@ -240,7 +241,7 @@ return view.extend({
 				else if (upgradable && !r.verified)
 					kids.push(E('div', { 'class': 'alert-message warning' },
 						_('An update is available, but the feed signature did not verify. It cannot be installed.')));
-				else
+				else if (!r.other)
 					kids.push(E('div', {}, E('em', {}, _('Up to date.'))));
 				dom.content(results, kids);
 			}).catch(function (e) {
@@ -256,7 +257,7 @@ return view.extend({
 				E('div', { 'class': 'cbi-section' }, [
 					E('h3', {}, _('Updates')),
 					E('p', { 'class': 'cbi-section-descr' },
-						_('Upgrades come only from the project feed on GitHub and are refused unless its signature verifies against the imported key.')),
+						_('Updates are offered only from the project feed on GitHub. apk verifies repository signatures against the installed keys before installation.')),
 					E('button', { 'class': 'btn cbi-button cbi-button-action',
 						'click': ui.createHandlerFn(this, doCheck) }, _('Check for updates')),
 					results

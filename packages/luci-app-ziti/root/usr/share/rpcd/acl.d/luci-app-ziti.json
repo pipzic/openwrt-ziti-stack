@@ -3,7 +3,7 @@
 		"description": "Grant access to manage OpenZiti via LuCI",
 		"read": {
 			"ubus": {
-				"ziti": [ "status", "list_identities", "check_update" ]
+				"ziti": [ "status", "list_identities", "check_update", "job_status" ]
 			},
 			"uci": [ "ziti" ]
 		},

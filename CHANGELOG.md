@@ -2,7 +2,55 @@
 
 Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for example `1.18.7-r22`. The first part is the version of the upstream tunneler. The `r` number goes up with every change to the packages, because `apk` upgrades only to a higher version.
 
-Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5, so an upgrade from r5 brings in all the changes below at once. Each entry lists what changed since the build before it.
+Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
+
+## 1.18.7-r23 - 2026-11-07
+
+The package preserves the router's DNS server settings and no longer edits `/etc/hosts`.
+
+Upgrading does not revert changes made by earlier releases. Before upgrading from r22, run `apk del luci-app-ziti ziti-edge-tunnel`. The r22 removal script restores `noresolv`, removes the DNS servers it added, and removes its block from `/etc/hosts`. Identities and settings are preserved.
+
+### Added
+
+- `source_zones` ("Source zones") selects the firewall zones allowed to forward traffic to the tunnel. The default is `lan`; guest networks in separate zones can also be selected. The watchdog manages forwardings named `ziti_fwd_<zone>` for existing zones, removes managed forwardings for deselected zones, and preserves user-created forwardings.
+- With **Block services on failure** enabled, an unexpected tunnel process exit keeps services blocked until procd restarts the tunnel and health checks pass. Service subnets are cached in `/etc/ziti/service-prefixes`, alongside cached service names, because the process exit removes the tunnel's routes. Previously, service traffic used normal routes until the restart. Selecting Stop removes the blocking. The status page now reports the process exit and pending procd restart.
+- Enroll, update checks, and upgrades run in the background while LuCI polls for the result. LuCI's 20-second request timeout previously caused slow upgrades to appear to fail while they continued, allowing another click to start a second operation. Further operations are now rejected while one is running.
+- The watchdog writes DNS forwarding rules for controller and router names to `ziti-fabric.conf` in dnsmasq's configuration directory, using the router's existing DNS configuration. This prevents broad service intercepts, such as `*.org`, from resolving OpenZiti endpoints to tunnel addresses and routing the tunnel's own connections through itself. A test with a domain-wide service intercept reproduced this routing loop. Existing domain rules, such as `/example.org/192.168.1.53`, determine the upstream servers used. The watchdog updates the file and restarts dnsmasq only when the rules change.
+
+### Changed
+
+- DNS queries for names outside service intercepts now use the router's configured DNS servers, including those supplied by the provider, set on the WAN interface, or listed under Forwards. Previously, the package enabled `noresolv` and added `1.1.1.1` and `8.8.8.8`, bypassing the provider's servers. The OpenZiti resolver now refuses queries outside service intercepts so dnsmasq can try the configured servers.
+- `198.18.0.2` goes to the top of the dnsmasq server list while the tunnel is healthy. Your own entries keep their order and no longer come before OpenZiti.
+- The watchdog checks every 5 seconds instead of 10, with a startup delay of 15 seconds instead of 20. The first restart attempt for a disconnected or unresponsive tunnel is scheduled after 30 seconds instead of 60; subsequent delays are 120, 600, and 1800 seconds. Internet and DNS check timeouts are reduced to 3 seconds from 4 and 5 seconds respectively; measured responses took well under a second. The connection timeout remains 12 seconds because OpenZiti reports failed connections after about 10 seconds. The tunnel status timeout remains 4 seconds; a failed request or timeout enables bypass immediately.
+- Probe connection attempts now run in parallel. A successful connection ends the check; otherwise, matching failure messages from OpenZiti can satisfy an automatic check. In a test with OpenZiti connectivity cut, bypass began after 39 seconds instead of 84 seconds. A normal check now starts up to three connections rather than usually one.
+- Update checks consider only versions from the project feed. If another repository has a newer version than the project feed, it is shown but no upgrade is offered, because apk would select that version instead.
+- Tunnel status and DNS requests return as soon as they finish, removing a one-second wait per request. A healthy check now takes a fraction of a second instead of about 3 seconds. A service that accepts a TCP connection but sends no data no longer holds the probe open for the full 12-second timeout.
+- The watchdog's log messages use plain terms that are easy to search: "bypass on", "bypass off", "Ziti DNS added to dnsmasq".
+- The README updates only these packages instead of running `apk upgrade`, which upgrades every package on the router.
+- On the settings page, "Internet and exit" is renamed to "Internet check", and the DNS section is removed. Settings apply without restarting the tunnel.
+
+### Fixed
+
+- Enroll left the token file in `/etc/ziti/.jwt-stage` after each attempt because the exit cleanup referenced a function-local variable that was no longer set. Tokens are now staged in `/var/run/ziti-jwt` in RAM, keeping any file left by a terminated rpcd call off flash and out of persistent backups.
+- When traffic went around the tunnel or came back, the status showed the old state for a few seconds while dnsmasq restarted. The watchdog now writes the state first.
+- With **Block services on failure** enabled, blocking routes also rejected the watchdog's own probes. A tunnel with only IP-based services could therefore remain in bypass after recovery. Probes now skip the bypass table.
+- During bypass, the watchdog flushed and rebuilt the bypass table on every check, briefly allowing traffic to use the tunnel's routes. The table is now rebuilt only when the source routes, cached service prefixes, or blocking setting change.
+- If `strictorder` was turned off after installation, the watchdog restarted dnsmasq on every check without turning it back on. It now sets it again.
+- DNS server selection for controller and router names now respects more specific forwarding rules that use `#` or specify no server, matches `*.example.org`, and compares names without regard to case.
+- Bypass detection now checks both rule priority and routing table for IPv4 and IPv6. Previously, an unrelated rule at the same priority could be mistaken for bypass, and an IPv6 bypass rule left without its IPv4 counterpart was not removed.
+- Enroll ignored the tunneler's exit code, and two enrollments in the same second got the same file name.
+- Update checks now select the newest available version instead of the first version listed by `apk`, which could be older than the installed version.
+- "Override internet check addresses" accepted IPv6 addresses, which the check cannot use. It now takes IPv4 only.
+- An identity name with a control character broke the identity list.
+- Two backend error messages are now translated in the Russian interface.
+
+### Removed
+
+- Controller address entries in `/etc/hosts` and the `refresh-hosts` command. The command queried dnsmasq, which returned the same cached addresses, preventing discovery of a controller whose address changed while the router was off. The tunneler resolves controller and router names when connecting.
+- `dns_upstream` ("Override upstream DNS server") and `dns_fallback_servers` ("Override fallback DNS servers"). These selected DNS servers for names outside service intercepts while the tunnel was healthy or unavailable. The router's DNS configuration now controls both cases.
+- The exit address check: `verify_expect_ip`, `verify_url` and `verify_timeout`. It queried one address through one service from the router and depended on a third-party public IP service. Custom targets under "Check specific resources" can check exit connectivity. Bypass did not address cases where the exit worked but had an unexpected public IP address.
+- Upgrade-time cleanup of settings, DNS changes, and the `/etc/hosts` block left by earlier releases. The package no longer migrates these changes; remove the older release before installing this one.
+- An empty translation template that pointed to a script that does not exist.
 
 ## 1.18.7-r22 - 2026-11-07
 

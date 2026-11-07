@@ -16,6 +16,26 @@ var callSetIdentity = rpc.declare({
 var callRemove = rpc.declare({
 	object: 'ziti', method: 'remove_identity', params: [ 'id' ], expect: { }
 });
+var callJob = rpc.declare({
+	object: 'ziti', method: 'job_status', expect: { }
+});
+
+// Long operations run in the background on the router. This waits for their answer.
+function runJob(start) {
+	return start.then(function (res) {
+		if (!res || res.error || !res.job)
+			return res;
+		return (function poll() {
+			return new Promise(function (resolve) { window.setTimeout(resolve, 2000); }).then(function () {
+				return callJob();
+			}).then(function (st) {
+				if (st && st.running)
+					return poll();
+				return (st && st.job == res.job && st.result) || { error: { code: 'lost', message: '' } };
+			});
+		})();
+	});
+}
 
 function readFileAsText(file) {
 	return new Promise(function (resolve, reject) {
@@ -26,10 +46,18 @@ function readFileAsText(file) {
 	});
 }
 
+function backendError(err) {
+	switch (err.code) {
+	case 'set_failed': return _('Cannot change the identity. Check that the tunnel is running.');
+	case 'not_found':  return _('The identity no longer exists.');
+	default:           return err.message || err.code;
+	}
+}
+
 function reloadOn(promise, message) {
 	return promise.then(function (res) {
 		if (res && res.error)
-			throw new Error(res.error.message || res.error.code);
+			throw new Error(backendError(res.error));
 		location.reload();
 	}).catch(function (e) {
 		ui.hideModal();
@@ -45,16 +73,18 @@ function enrollError(err) {
 	case 'token-used':    return _('The token is invalid: it has expired, was already used, or was revoked. Create a new one on the controller.');
 	case 'token-format':  return _('The selected file is not an OpenZiti token.');
 	case 'no-controller': return _('Cannot reach the controller named in the token. Check the internet connection.');
+	case 'busy':          return _('Another operation is still running. Try again when it finishes.');
+	case 'lost':          return _('The router did not return the result. Reload the page to see the current state.');
 	default:              return err.message || err.code;
 	}
 }
 
 function enroll(file) {
 	ui.showModal(_('Enrolling...'), [
-		E('p', { 'class': 'spinning' }, _('Contacting the controller and loading the identity...'))
+		E('p', { 'class': 'spinning' }, _('Contacting the controller and enrolling the identity...'))
 	]);
 	return reloadOn(readFileAsText(file).then(function (jwt) {
-		return callEnroll(jwt.trim());
+		return runJob(callEnroll(jwt.trim()));
 	}).then(function (res) {
 		if (res && res.error)
 			throw new Error(enrollError(res.error));
@@ -65,7 +95,7 @@ function enroll(file) {
 function remove(id, name) {
 	if (!confirm(_('Delete identity %q? This cannot be undone.').format(name)))
 		return;
-	return reloadOn(callRemove(id), _('Remove failed: %s'));
+	return reloadOn(callRemove(id), _('Failed to remove identity: %s'));
 }
 
 function statusLabel(status) {
@@ -157,7 +187,7 @@ return view.extend({
 							})
 						}, _('Enroll')), ' ',
 						fileName,
-						E('div', { 'class': 'cbi-value-description' }, _('One-time .jwt file from your controller. The tunnel restarts to load the identity, so clients lose connection briefly.'))
+						E('div', { 'class': 'cbi-value-description' }, _('One-time .jwt file from your controller. The tunnel restarts when the identity is uploaded.'))
 					])
 				])
 			])

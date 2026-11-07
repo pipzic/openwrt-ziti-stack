@@ -1,27 +1,27 @@
 # openwrt-ziti-stack
 
-Signed [OpenZiti](https://openziti.io) packages for OpenWrt 25.12, installable with a plain `apk add`.
+Signed [OpenZiti](https://openziti.io) packages for OpenWrt 25.12. Install with `apk add`.
 
 The upstream [ziti-openwrt](https://github.com/openziti/ziti-openwrt) project publishes `opkg` packages for OpenWrt 23.05. This repository builds the same software for the `apk` package manager used since OpenWrt 25.12.
 
 ## Why this project exists
 
-OpenWrt 25.12 replaced `opkg` with `apk`, and no ready-made OpenZiti packages exist for it. Without them you need to set up the OpenWrt SDK, patch the sources, and repeat that for every release.
+OpenWrt 25.12 replaced `opkg` with `apk`. Using the upstream OpenZiti packages on this release requires rebuilding them with the OpenWrt SDK and applying compatibility fixes for each release.
 
-This project solves that:
+This project:
 
-- builds the packages for every 25.12.x release and publishes them as a signed feed, so installing and updating take one `apk` command;
+- builds packages for the listed 25.12.x releases and publishes a signed feed for installation and updates with `apk`;
 - fixes what stops the upstream packages from working on a clean 25.12 system: the libuv version, the missing `curl` dependency, and the `opkg` calls in the web interface;
-- tests every release before publishing.
+- tests package installation, signature checks, and detection of modified packages in containers before publishing.
 
 ## What OpenZiti does on a router
 
-[OpenZiti](https://openziti.io) is a zero-trust overlay network: access goes to named services rather than to a network, each device has its own cryptographic identity, and policies on your controller decide who may reach what. Connections are outbound, so the router needs no open inbound ports or public IP address.
+[OpenZiti](https://openziti.io) is a zero-trust overlay network. It grants access to individual services using cryptographic identities and policies defined on your controller. The tunneler makes outbound connections, so the router needs no open inbound ports or public IP address.
 
 Running the tunneler on a router gives you:
 
-- **Access for devices that cannot run a tunneler.** Printers, TVs, phones, and guests behind the router reach Ziti services without any software of their own.
-- **All LAN traffic through a remote exit.** A travel router can send everything through an exit at home, so clients appear to be at that location.
+- **Access for devices that cannot run a tunneler.** Printers, TVs, phones, and guest devices behind the router can reach Ziti services without installing OpenZiti software.
+- **LAN IPv4 traffic through a remote exit.** A travel router can send TCP and UDP traffic through an exit at home, so clients use the exit's public address.
 - **An exit or entry point into a network.** The router can publish services from its own LAN to the overlay, again without opening ports.
 
 OpenZiti carries TCP and UDP, not ICMP, so `ping` does not work through the tunnel. The tunneler runs in user space, so expect lower throughput than a kernel VPN.
@@ -34,7 +34,7 @@ OpenZiti carries TCP and UDP, not ICMP, so `ping` does not work through the tunn
 | `llhttp9` | HTTP parser library | Pulled in automatically |
 | `luci-app-ziti` | Web interface under Services > OpenZiti | Optional |
 
-The device's role is decided by the service policies on your Ziti controller, not by the packages:
+The device's role depends on service configurations and policies on your Ziti controller:
 
 - **Exit point:** an identity with a Bind policy.
 - **LAN gateway:** an identity with a Dial policy.
@@ -44,15 +44,17 @@ The device's role is decided by the service policies on your Ziti controller, no
 
 Only official OpenWrt firmware is supported. Vendor firmware has different kernels, libraries, and package managers.
 
-| Architecture | OpenWrt | Built | Installed and started in a container |
+| Architecture | OpenWrt | Built | Installed in a container |
 |---|---|---|---|
 | `aarch64_cortex-a53` | 25.12.0 to 25.12.6 | Yes | Yes, in an `aarch64_generic` image |
 
-Use the latest 25.12.x: older releases are available for existing installations, but newer ones carry security fixes.
+Use the latest supported 25.12.x release for security fixes. Packages for older releases remain available for existing installations.
+
+Container tests install packages without running installation scripts. They do not test a live tunnel, procd, ubus, or router networking.
 
 ### Router compatibility
 
-These routers have official OpenWrt 25.12.6 images on the `mediatek/filogic` target, the target these packages are built on. The list is not complete: check [the OpenWrt firmware selector](https://firmware-selector.openwrt.org/) for your model. Hardware figures come from secondary sources and may differ between revisions, so check your unit.
+These routers have official OpenWrt 25.12.6 images for `mediatek/filogic`, the build target used by this project. Check [the OpenWrt firmware selector](https://firmware-selector.openwrt.org/) for other models. Hardware specifications come from secondary sources and may vary by revision; check your device.
 
 | Router | SoC | RAM | Tested on a live router |
 |---|---|---|---|
@@ -79,7 +81,7 @@ With [`install.sh`](install.sh):
 uclient-fetch -q -O - https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
 ```
 
-If `curl` is installed, this does the same job (OpenWrt does not ship it by default):
+If `curl` is installed, you can use it instead (OpenWrt does not include it by default):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh
@@ -91,7 +93,7 @@ This installs `ziti-edge-tunnel`. To choose the packages, pass them as arguments
 uclient-fetch -q -O - https://raw.githubusercontent.com/pipzic/openwrt-ziti-stack/master/install.sh | sh -s -- ziti-edge-tunnel luci-app-ziti
 ```
 
-Piping to `sh` runs whatever the URL serves, so read the script first if you prefer.
+To review the script before running it, download it and read it before passing it to `sh`.
 
 Or paste the same steps over SSH:
 
@@ -117,7 +119,7 @@ Or paste the same steps over SSH:
 
 Create an identity on your Ziti controller and download its enrollment token (a `.jwt` file).
 
-Then use the web interface (Services > OpenZiti > Identities, needs `luci-app-ziti`), or copy the token to `/tmp/device.jwt` on the router and run:
+Use Services > OpenZiti > Identities in the web interface (requires `luci-app-ziti`), or copy the token to `/tmp/device.jwt` on the router and run:
 
 ```sh
 ziti-edge-tunnel enroll --jwt /tmp/device.jwt --identity /etc/ziti/identities/device.json
@@ -128,34 +130,36 @@ rm /tmp/device.jwt
 
 ## How it behaves
 
-All enabled identities work at once, and their services decide what enters the tunnel. There are no modes. Turn an identity on or off under Services > OpenZiti > Identities.
+The tunneler loads all enabled identities. Their service intercept configurations determine which traffic enters the tunnel. Enable or disable an identity under Services > OpenZiti > Identities.
 
-A service that should carry all traffic must intercept `0.0.0.0/1` and `128.0.0.0/1`. An intercept of `0.0.0.0/0` does not work on a router: the tunneler cannot add a second default route.
+A service that should carry all IPv4 traffic must intercept `0.0.0.0/1` and `128.0.0.0/1`. An intercept of `0.0.0.0/0` does not work on a router: the tunneler cannot add a second default route.
 
 Do not send all traffic through the tunnel if your Ziti controller or routers sit behind this router: their own traffic enters the tunnel too.
 
-**When the tunnel breaks,** a watchdog sends traffic around it and leaves it running, so remote access returns on its own as soon as the overlay does. It restarts the tunnel only if it stops responding or stays disconnected while the internet works. It does not start a tunnel you stopped yourself; after a reboot, the autostart setting decides.
+**On tunnel failure,** the watchdog enables bypass while leaving the tunnel running so it can reconnect. Routing through the tunnel resumes after the configured number of successful checks. The watchdog restarts the tunnel only if it stops responding or remains disconnected despite working internet access. It does not start a tunnel you stopped manually. After a reboot, the autostart setting determines whether the tunnel starts.
 
-While traffic goes around the tunnel, it goes directly, from your real address. To block the addresses and names of your services instead, tick **Block services on failure** in the settings.
+During bypass, traffic follows the router's normal routes and uses its normal public address. To block traffic to service addresses and names instead, enable **Block services on failure** in the settings. Blocking also applies if the tunnel process exits unexpectedly, until procd restarts it and the checks pass. Selecting **Stop** removes the blocking.
 
-**The watchdog checks the fabric, not your services.** Each check picks a few random addresses from all your services, a new choice every time, and opens TCP connections to them through the tunnel. One answer from the fabric is enough:
+**By default, the watchdog checks the OpenZiti network rather than service availability.** Each check randomly selects up to the configured number of addresses from enabled identities' services. It resolves any selected hostnames and starts TCP connection attempts through the tunnel in parallel. A successful connection ends the check and cancels the remaining attempts. If no connection succeeds, certain failure messages in the tunneler log also count as a response from OpenZiti:
 
-| Result of a connection | Automatic check | Resources set by hand |
+| Connection result | Automatic check | Custom resources |
 |---|---|---|
 | Connected | Passes | Passes |
-| The target refused, or the service has no terminators | Passes: the fabric carried the request | Does not count |
+| Target refused the connection, no service terminators, or a route-creation error reported for a dial | Passes if a new matching failure appears in the tunneler log | Does not count |
 | No answer | Does not count | Does not count |
 
-So a dead service alone does not send traffic around the tunnel, and its traffic fails until the service returns. That includes an exit service carrying all your traffic. If a specific resource must work, list it under **Check specific resources**: the watchdog then connects only to those addresses, and goes around the tunnel when none of them answers.
+An unavailable service can therefore leave the tunnel marked healthy while connections to that service fail. This also applies to an exit service carrying all intercepted traffic. To require a successful TCP connection, list resources under **Check specific resources**. Each check samples only that list, up to the configured address count, and fails if none of the selected resources accepts a connection.
 
-All service addresses count the same. Names are resolved when picked, and a subnet is checked at its first address, such as `128.0.0.1` for `128.0.0.0/1`. Wildcard names and UDP-only services cannot be checked. If nothing can be checked, the watchdog relies on the connection to the controller and routers.
+Each unique address-and-port pair has the same chance of selection. Hostnames are resolved when selected. For an IPv4 subnet, the probe uses the listed address plus one where possible, such as `128.0.0.1` for `128.0.0.0/1`; `/31` and `/32` addresses are used unchanged. Wildcard names, IPv6 addresses, and UDP-only services are excluded from automatic probes. If no probe targets are available, the watchdog relies on authentication and router connection status.
 
 To see what it would check, run `/usr/libexec/ziti-boot-guard probes`.
 
 ```mermaid
 flowchart TD
     A[Every check interval] --> B{Tunnel process running?}
-    B -->|No| S[Stopped: no bypass, Ziti DNS unlisted]
+    B -->|No| X{Exited without Stop, blocking on?}
+    X -->|No| S[Stopped: no bypass, Ziti DNS unlisted]
+    X -->|Yes| CR[Exited: bypass with blocking until the tunnel is back]
     B -->|Yes| C{Watchdog on?}
     C -->|No| U[Not checked]
     C -->|Yes| D{Startup delay over?}
@@ -165,18 +169,16 @@ flowchart TD
     E -->|Yes| F{Identity on, authenticated, connected to a router?}
     F -->|No identity on| NS[No services]
     F -->|Not connected| W{Internet works outside the tunnel?}
-    W -->|Yes| NC[No connection: refresh controller addresses, restart after a pause]
+    W -->|Yes| NC[No connection: restart after a pause]
     W -->|No| NI[No internet: no restart]
     F -->|Yes| G{Any services?}
     G -->|No| NS
     G -->|Yes| I[Pick random addresses, or the ones set by hand]
-    I --> J{Passed, as in the table above?}
+    I --> J{Check passed using the criteria above?}
     J -->|No| W2{Internet works outside the tunnel?}
     W2 -->|Yes| ND[No data]
     W2 -->|No| NI
-    J -->|Yes| K{Exit address check on, and the address differs?}
-    K -->|Yes| ND
-    K -->|No| OK[Healthy]
+    J -->|Yes| OK[Healthy]
     NS --> BAD[Failed check]
     NC --> BAD
     NI --> BAD
@@ -193,20 +195,29 @@ How the parts fit together:
 flowchart LR
     C[LAN clients] -->|names| D[dnsmasq]
     D -->|first, while healthy| Z[Ziti resolver 198.18.0.2]
-    D -->|otherwise| FB[Fallback DNS servers]
+    D -->|names it refuses, and while broken| RD[Router's own DNS]
+    D -->|controller and router names| RD
     C -->|traffic| R{Routing rules}
     R -->|service address, main table| T[ziti0]
     R -->|any other address| WAN[WAN]
-    R -->|bypass on, second table| WAN
+    R -->|bypass on, second table; unblocked traffic| WAN
     T --> FAB[OpenZiti fabric] --> E[Service exit]
     WD[Watchdog] -.->|TCP checks| T
     WD -.->|adds and removes the rule| R
-    WD -.->|lists and unlists the resolver| D
+    WD -.->|adds or removes the resolver; updates controller and router DNS rules| D
 ```
 
 ### DNS
 
-dnsmasq asks OpenZiti first, so service names work without further setup, and falls back to other servers while the tunnel is broken.
+The package preserves your DNS servers: those supplied by your provider, configured on the WAN interface, or listed under Network > DHCP and DNS > Forwards. It places the OpenZiti resolver first in dnsmasq's server list:
+
+- While the tunnel is healthy, dnsmasq sends queries without a more specific forwarding rule to OpenZiti first. OpenZiti resolves service names and refuses other queries, which dnsmasq then sends to your DNS servers.
+- While the tunnel is broken, OpenZiti is taken out of the list, and dnsmasq asks only your own servers.
+- The watchdog adds DNS forwarding rules for controller and router names using your existing DNS servers. This prevents a broad service intercept, such as `*.org`, from resolving the tunnel's own endpoints to addresses inside the tunnel. Existing domain rules, such as `/example.org/192.168.1.53`, determine which servers these rules use. If no upstream server is available for a name, the watchdog cannot add a rule for it.
+
+The watchdog keeps the rules for the controller and router names up to date. It rewrites them when you change your DNS servers, when your provider hands out new ones, or when a new controller or router appears.
+
+A DNS server that is reachable only through the tunnel works like any other address of a service: add a forwarding rule for its domain under Forwards, and make sure a service intercepts its address. It answers only while the tunnel is healthy.
 
 > [!IMPORTANT]
 > **This project overrides the tunneler's DNS range.** By default the tunneler gives service names addresses from `100.64.0.0/10`. dnsmasq rebind protection, on by default in OpenWrt, drops those answers, as it does for `10.0.0.0/8`, so service names would work only with that protection turned off. Answers from `198.18.0.0/16` pass it (tested with dnsmasq 2.93). The package therefore starts the tunneler with `--dns-ip-range 198.18.0.1/16`, and the protection stays on.
@@ -215,37 +226,37 @@ dnsmasq asks OpenZiti first, so service names work without further setup, and fa
 
 ### Settings
 
-Set these in the web interface under Services > OpenZiti > Settings, or with `uci` in `/etc/config/ziti`. The web interface folds the rarely changed ones into **Additional watchdog settings**. Changes apply without a restart, except `dns_upstream`.
+Set these in the web interface under Services > OpenZiti > Settings, or with `uci` in `/etc/config/ziti`. The web interface folds the rarely changed ones into **Additional watchdog settings**. Changes apply without restarting the tunnel.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `log_level` | `INFO` | Log detail for the tunnel |
+| `log_level` | `INFO` | Log detail level |
+| `source_zones` | `lan` | Firewall zones whose traffic may enter the tunnel |
 | `watchdog_enabled` | `1` | Check the tunnel and send traffic around it on failure |
-| `block_on_failure` | `0` | While broken, block service addresses and names instead |
-| `watchdog_probes` | none | Resources that must really answer, as `address[:port]` or `name[:port]`, port 443 if omitted |
-| `verify_expect_ip` | none | A check passes only if traffic leaves from this public IP |
-| `watchdog_interval` | `10` | Seconds between checks |
-| `watchdog_fails` | `3` | Failed checks in a row before traffic goes around the tunnel |
-| `watchdog_recover` | `2` | Good checks in a row before traffic returns |
+| `block_on_failure` | `0` | During bypass, block traffic to cached service addresses and names, including after an unexpected process exit |
+| `watchdog_probes` | none | Resources that must accept a connection, as `address[:port]` or `name[:port]`, port 443 if omitted |
+| `watchdog_interval` | `5` | Seconds between checks |
+| `watchdog_fails` | `3` | Consecutive failed checks before bypass; an unresponsive tunnel triggers bypass immediately |
+| `watchdog_recover` | `2` | Consecutive successful checks before restoring tunnel routing |
 | `watchdog_timeout` | `12` | Seconds to wait for one address. The fabric reports a failed connection after about 10 seconds, so keep it at 11 or more |
-| `watchdog_grace` | `20` | Seconds before the first check after a start |
-| `watchdog_probe_count` | `3` | Random addresses tried per check |
-| `watchdog_wan_probes` | `1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222` | Checked outside the tunnel, to tell a lost internet connection from a fabric failure |
-| `watchdog_restart_delays` | `60 300 900 1800` | Seconds before each restart; the last one repeats |
-| `watchdog_status_timeout` | `4` | Seconds to wait for the tunnel's state before calling it frozen |
-| `watchdog_wan_timeout` | `4` | Seconds to wait for one internet check address |
-| `watchdog_dns_timeout` | `5` | Seconds to wait for a DNS answer |
-| `verify_url` | `https://api.ipify.org` | Service that reports the public IP for `verify_expect_ip` |
-| `verify_timeout` | `8` | Seconds to wait for that service |
+| `watchdog_grace` | `15` | Seconds before the first check after a start |
+| `watchdog_probe_count` | `3` | Maximum addresses sampled per check, from services or the custom resource list |
+| `watchdog_wan_probes` | `1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222` | Addresses checked outside the tunnel to distinguish an internet outage from an OpenZiti network failure |
+| `watchdog_restart_delays` | `30 120 600 1800` | Seconds before each restart; the last one repeats |
+| `watchdog_status_timeout` | `4` | Timeout in seconds for each tunnel status request; a failed request or timeout marks the tunnel as unresponsive |
+| `watchdog_wan_timeout` | `3` | Seconds to wait for one internet check address |
+| `watchdog_dns_timeout` | `3` | Seconds to wait for a DNS answer |
 | `bypass_table` | `1890` | Routing table of the bypass |
 | `bypass_priority` | `100` | Priority of the rule that selects it |
-| `dns_fallback_servers` | `1.1.1.1 8.8.8.8` | dnsmasq asks these when OpenZiti has no answer or the tunnel is broken |
-| `dns_upstream` | `1.1.1.1` | Where the tunnel's DNS sends names that are not services; `none` refuses them |
 
-> [!IMPORTANT]
-> **The host in `verify_url` must be part of a service of your identity.** The exit address check connects through the tunnel, so with any other host it fails and traffic goes around the tunnel.
->
-> The router then sends that host into the tunnel for every device on your network, not only for the check. A dynamic DNS client or other software that uses the same host to find your public address gets the exit address instead, and may publish it. Do not use a host that anything on your network relies on for this.
+To check that a full tunnel can reach a public resource through its exit, add a target under **Check specific resources**, for example `1.1.1.1:443`. If the TCP connection fails for the configured number of checks, the watchdog enables bypass. This checks connectivity, not the exit's public IP address.
+
+### Fixed values
+
+These are set in the code and cannot be changed in the settings:
+
+- **Addresses for service names:** `198.18.0.0/16`, with the OpenZiti resolver at `198.18.0.2`. If your network already uses this range, its addresses clash with service names.
+- **dnsmasq instance:** the package changes the first dnsmasq instance (`dhcp.@dnsmasq[0]`) and puts its rules into the configuration directory of the first one it finds. With several instances, the two may not be the same one.
 
 ## What this changes on your router
 
@@ -255,9 +266,9 @@ Set these in the web interface under Services > OpenZiti > Settings, or with `uc
 |---|---|
 | The tunneler, the watchdog, two services | `/usr/bin/ziti-edge-tunnel`, `/usr/libexec/ziti-boot-guard`, `/etc/init.d/ziti-edge-tunnel`, `/etc/init.d/ziti-guard`, and their `/etc/rc.d` links |
 | Settings and identities | `/etc/config/ziti`, `/etc/ziti/identities/` |
-| Saved state | `/etc/ziti/dns.saved` and `/etc/ziti/dns.saved.servers` (original dnsmasq values), `/etc/ziti/service-names` (for blocking), `/var/run/ziti-*` |
+| Saved state | `/etc/ziti/dns.saved` (your original `strictorder`), `/etc/ziti/service-names` and `/etc/ziti/service-prefixes` (for blocking), `/var/run/ziti-*` (including the token while Enroll runs) |
 | Firewall zone `ziti` | Device `ziti0`, input and forward rejected, output accepted, masquerading and MSS clamping on |
-| Firewall forwarding | `lan` to `ziti` |
+| Firewall forwardings | From each zone in `source_zones` to `ziti`, named `ziti_fwd_<zone>`. Existing user-created forwardings are preserved |
 | System group `ziti` | `/etc/group`, for the tunneler's control socket |
 | Dependencies | `curl`, `ip-full`, `kmod-tun`, and the libraries `apk` pulls in |
 | Web interface, with `luci-app-ziti` | Views under `/www/luci-static/resources/view/ziti/`, `/usr/libexec/rpcd/ziti`, its ACL and menu entry, the Russian translation |
@@ -267,36 +278,36 @@ Set these in the web interface under Services > OpenZiti > Settings, or with `uc
 
 | What | How |
 |---|---|
-| dnsmasq `noresolv` and `strictorder` | Both set to `1`, so dnsmasq ignores your provider's DNS servers and asks its own list in order |
-| dnsmasq `server` list | Gains the fallback servers, plus `198.18.0.2` while the tunnel is healthy. dnsmasq restarts when this changes |
-| `/etc/hosts` | A managed block with the controller's addresses, so the tunnel can find it whatever happens to DNS |
+| dnsmasq `strictorder` | Set to `1`, so dnsmasq asks OpenZiti before your own servers |
+| dnsmasq `server` list | Gains `198.18.0.2` at the top while the tunnel is healthy. Your entries keep their order. dnsmasq restarts when this changes |
 
 **While running:**
 
 | What | When |
 |---|---|
 | Interface `ziti0`, and a route in the main table for each service | While the tunnel runs |
-| Routing rule at priority `100`, and table `1890` | While traffic goes around the tunnel |
+| `ziti-fabric.conf` in dnsmasq's configuration directory, with the rules for the controller and router names | While the watchdog runs |
+| Two routing rules per address family at priority `100`, and table `1890` | While bypass is enabled. The first rule lets the watchdog's own checks reach the tunnel |
 | `ziti-block.conf` in dnsmasq's configuration directory | While traffic goes around the tunnel, with **Block services on failure** ticked |
 
-**Leaves alone:** rebind protection, the `lan` to `wan` forwarding, WAN and wireless settings. The package removes none of your settings. An upgrade from an older release of this package drops only that release's own settings.
+**Leaves alone:** your DNS servers, rebind protection, `/etc/hosts`, forwardings into `ziti` that you made yourself, the `lan` to `wan` forwarding, WAN and wireless settings. The package removes none of your settings.
 
-**After `apk del`:** the watchdog, the rule, the `/etc/hosts` block, the firewall sections it created, and its dnsmasq changes are gone, with the original dnsmasq values restored. Identities and changed settings stay, so a later installation picks them up. So does the `ziti` group. Remove the key and the feed list as shown under [Remove](#remove).
+**After `apk del`:** the bypass rules and tables, package-managed firewall sections, and dnsmasq changes are removed, and your original `strictorder` value is restored. Identities and modified settings remain for later reinstallation, as does the `ziti` group. Remove the key and feed list as shown under [Remove](#remove).
 
 ## Update the packages
 
 ```sh
 apk update
-apk upgrade
+apk add --upgrade ziti-edge-tunnel luci-app-ziti
 ```
 
-`apk upgrade` updates every installed package, including those from the official repositories.
+Leave out `luci-app-ziti` if you do not use the web interface.
 
 ## After a system upgrade
 
 `sysupgrade` replaces the installed packages. Whether the signing key and the feed list survive depends on how you upgrade. Run the install snippet again for the new release, then install the same optional packages. Identities and settings under `/etc` are kept by a normal keep-settings upgrade.
 
-Attended Sysupgrade and `owut` do not carry packages from third-party feeds into the new image.
+Attended Sysupgrade and `owut` do not carry packages from third-party feeds into the new image. Reinstall these packages for the new release after the upgrade.
 
 ## Remove
 
@@ -309,11 +320,11 @@ rm /etc/apk/repositories.d/openwrt-ziti-stack.list /etc/apk/keys/openwrt-ziti-st
 
 - Built for OpenWrt 25.12 and `apk`, from a copy of upstream commit `f54a5d7` kept in this repository.
 - `ziti-edge-tunnel` 1.18.7, with a guard for libuv older than 1.50, because OpenWrt 25.12 ships 1.48.
-- `ziti-edge-tunnel` depends on `curl`. The boot guard needs it, and without it the watchdog treats a healthy full tunnel as dead.
+- `ziti-edge-tunnel` depends on `curl`, which the watchdog uses for its checks.
 - The web interface's update check uses `apk`.
 - The full and split modes are gone, and a new watchdog keeps the tunnel running through failures.
 - The tunneler gives service names addresses from `198.18.0.0/16` instead of `100.64.0.0/10`, so rebind protection stays on.
-- All DNS goes through OpenZiti first, with fallback servers. `ZET DNS upstream` defaults to `1.1.1.1`.
+- dnsmasq asks OpenZiti first for queries without a more specific forwarding rule, then uses the router's own DNS servers. The watchdog adds separate forwarding rules for controller and router names.
 - Identities can be turned on and off, and their names and state come from the tunnel.
 - The firewall zone is created on installation.
 - The web interface includes a Russian translation.

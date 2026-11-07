@@ -46,13 +46,14 @@ function stateLabel(state) {
 	case 'healthy':       return _('Working');
 	case 'starting':      return _('Starting');
 	case 'stopped':       return _('Stopped');
+	case 'crashed':       return _('Tunnel process exited; waiting for procd to restart it');
 	case 'unchecked':     return _('Not checked: the watchdog is off');
 	case 'no-identities': return _('No identities enrolled');
-	case 'no-services':   return _('No services available, traffic goes around the tunnel');
+	case 'no-services':   return _('No services available; tunnel bypass enabled');
 	case 'no-internet':   return _('No internet connection');
-	case 'no-connection': return _('No connection to the controller or OpenZiti routers, traffic goes around the tunnel');
-	case 'no-data':       return _('Connected, but services do not respond, traffic goes around the tunnel');
-	case 'hung':          return _('The tunnel is not responding, restarting');
+	case 'no-connection': return _('No connection to the controller or OpenZiti routers; tunnel bypass enabled');
+	case 'no-data':       return _('Connected, but traffic checks failed; tunnel bypass enabled');
+	case 'hung':          return _('Tunnel not responding; restart pending');
 	default:              return state || _('unknown');
 	}
 }

@@ -35,6 +35,22 @@ expect_equal() {
 	[ "$2" = "$3" ] || fail "$1: expected '$3', got '$2'"
 }
 
+# check_update answers at once and leaves its result to job_status.
+check_update() {
+	local i=0 st
+	/usr/libexec/rpcd/ziti call check_update </dev/null >/dev/null
+	while [ "$i" -lt 60 ]; do
+		st="$(/usr/libexec/rpcd/ziti call job_status </dev/null)"
+		if [ "$(echo "$st" | jsonfilter -e '@.running')" != true ]; then
+			echo "$st" | jsonfilter -e '@.result'
+			return
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	fail "check_update did not finish: $st; $(ls -l /var/run/ziti-job 2>&1 | tr '\n' ' '); $(ps 2>&1 | tr '\n' ' ')"
+}
+
 case_install() {
 	prepare
 	trust_feed
@@ -50,7 +66,7 @@ case_install() {
 	/usr/libexec/rpcd/ziti list | jsonfilter -e '@.set_identity' >/dev/null || fail "rpcd set_identity"
 
 	/usr/libexec/rpcd/ziti list | jsonfilter -e '@.check_update' >/dev/null || fail "rpcd list"
-	result="$(/usr/libexec/rpcd/ziti call check_update </dev/null)"
+	result="$(check_update)"
 	echo "$result"
 	[ -n "$(echo "$result" | jsonfilter -e '@.installed')" ] || fail "check_update reports no installed version"
 	expect_equal "feed in check_update" "$(echo "$result" | jsonfilter -e '@.feed')" "$FEED/packages.adb"
@@ -60,7 +76,7 @@ case_install() {
 
 	# apk only warns about an untrusted index, so the update check must report it.
 	rm /etc/apk/keys/openwrt-ziti-stack.pem
-	result="$(/usr/libexec/rpcd/ziti call check_update </dev/null)"
+	result="$(check_update)"
 	echo "$result"
 	expect_equal "check_update without the key" "$(echo "$result" | jsonfilter -e '@.error.code')" update_failed
 }

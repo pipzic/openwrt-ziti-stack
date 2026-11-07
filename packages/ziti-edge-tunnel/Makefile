@@ -41,7 +41,7 @@ define Package/ziti-edge-tunnel
   TITLE:=OpenZiti edge tunneler (ZET)
   URL:=https://openziti.io/
   DEPENDS:=+libuv +libopenssl +zlib +libjson-c +libsodium +libprotobuf-c +libpcap +llhttp +libatomic +kmod-tun +ip-full +ca-bundle
-  # ziti-boot-guard runs curl for its reachability and egress probes.
+  # ziti-boot-guard runs curl for its reachability probes.
   EXTRA_DEPENDS:=curl (>=0)
 endef
 
@@ -143,44 +143,6 @@ if ! grep -q '^ziti:' /etc/group; then
 	done
 	echo "ziti:x:$${gid}:" >> /etc/group
 fi
-
-# Only a config from before the redesign has tunnel_mode. It wrote these as defaults, and
-# its timeout is too short for the new check. Later choices must survive an upgrade.
-if [ -n "$$(uci -q get ziti.main.tunnel_mode)" ]; then
-	uci -q delete ziti.main.watchdog_timeout
-	uci -q delete ziti.main.watchdog_probes
-	[ "$$(uci -q get ziti.main.watchdog_interval)" = 10 ] && uci -q delete ziti.main.watchdog_interval
-	[ "$$(uci -q get ziti.main.watchdog_fails)" = 3 ] && uci -q delete ziti.main.watchdog_fails
-	[ "$$(uci -q get ziti.main.watchdog_grace)" = 20 ] && uci -q delete ziti.main.watchdog_grace
-fi
-# Drop settings of older releases. Modes turned identities off by renaming files.
-for o in enabled tunnel_mode full_identity split_identity ziti_dns_domains dns_failover \
-	dns_failover_servers dns_resolver_ip boot_verify max_boot_failures verify_tries verify_interval; do
-	uci -q delete "ziti.main.$$o"
-done
-while uci -q delete ziti.@identity[0]; do :; done
-uci commit ziti
-for f in /etc/ziti/identities/*.json.disabled; do
-	[ -e "$$f" ] && mv "$$f" "$${f%.disabled}"
-done
-# An older release changed dnsmasq and kept the original values here.
-if [ -e /etc/ziti/dns-failover.saved ]; then
-	while read -r o v; do
-		if [ "$$v" = "-" ]; then uci -q delete "dhcp.@dnsmasq[0].$$o"; else uci set "dhcp.@dnsmasq[0].$$o=$$v"; fi
-	done < /etc/ziti/dns-failover.saved
-	for s in $$(cat /etc/ziti/dns-failover.saved.servers 2>/dev/null); do
-		uci -q del_list "dhcp.@dnsmasq[0].server=$$s"
-	done
-	uci commit dhcp
-fi
-for s in $$(uci -q get dhcp.@dnsmasq[0].server); do
-	case "$${s##*/}" in 100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
-		uci -q del_list "dhcp.@dnsmasq[0].server=$$s" ;;
-	esac
-done
-uci -q del_list dhcp.@dnsmasq[0].notinterface=ziti0
-uci commit dhcp
-rm -f /etc/ziti/boot-guard.state /etc/ziti/dns-failover.saved /etc/ziti/dns-failover.saved.servers
 
 /usr/libexec/ziti-boot-guard setup
 
