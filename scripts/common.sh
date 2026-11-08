@@ -12,8 +12,12 @@ die() {
   exit 1
 }
 
+# downloads.openwrt.org sometimes drops HTTP/2 streams mid-transfer. HTTP/1.1 and a retry
+# on any error keep that from failing a build; a failed download leaves no partial file.
 fetch() {
-  curl --fail --silent --show-error --location --retry 3 --output "$2" "$1"
+  curl --fail --silent --show-error --location --http1.1 \
+    --retry 5 --retry-all-errors --retry-delay 5 --output "$2" "$1" \
+    || { rm -f "$2"; return 1; }
 }
 
 # Download one file listed in a release's signed sha256sums and verify it.
@@ -25,8 +29,8 @@ verified_fetch() {
   local sums matches sum name actual
   sums="$(mktemp -d)"
 
-  fetch "$base/sha256sums" "$sums/sha256sums"
-  fetch "$base/sha256sums.sig" "$sums/sha256sums.sig"
+  fetch "$base/sha256sums" "$sums/sha256sums" || die "download failed: $base/sha256sums"
+  fetch "$base/sha256sums.sig" "$sums/sha256sums.sig" || die "download failed: $base/sha256sums.sig"
   signify-openbsd -V -q -p "$ROOT/keys/openwrt-usign.pub" \
     -x "$sums/sha256sums.sig" -m "$sums/sha256sums" >&2 \
     || die "bad signature on $base/sha256sums"
@@ -40,7 +44,7 @@ verified_fetch() {
   [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "unsafe file name: $name"
 
   mkdir -p "$dest"
-  [[ -f "$dest/$name" ]] || fetch "$base/$name" "$dest/$name"
+  [[ -f "$dest/$name" ]] || fetch "$base/$name" "$dest/$name" || die "download failed: $base/$name"
   actual="$(sha256sum "$dest/$name" | awk '{print $1}')"
   [[ "$actual" == "$sum" ]] || die "sha256 mismatch for $name"
   rm -rf "$sums"

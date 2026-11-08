@@ -86,7 +86,8 @@ check_dependencies() {
   : > "$apk_root/lib/apk/db/installed"
   ln -s /dev/null "$apk_root/var/log/apk.log"
 
-  kmods="$(curl --fail --silent --show-error --location "$base/targets/$TARGET/kmods/" \
+  kmods="$(curl --fail --silent --show-error --location --http1.1 --retry 5 --retry-all-errors \
+    --retry-delay 5 "$base/targets/$TARGET/kmods/" \
     | grep -oE 'href="[0-9][^"/]+/"' | sed -E 's/href="([^"]+)\/"/\1/')"
   [[ "$(printf '%s' "$kmods" | grep -c '^')" == 1 ]] \
     || die "expected one kmods directory, got: ${kmods:-none}"
