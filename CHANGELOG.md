@@ -4,6 +4,42 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r25 - 2026-11-08
+
+### Added
+
+- Tunnel exceptions on the settings page: **Bypass the tunnel completely** (`direct_sources`) and **Tunnel only for services** (`services_sources`) for IPv4 addresses or subnets in the source zones. With its rules installed, complete bypass uses routes outside the tunnel and rejects traffic when no route matches. Traffic to service-name addresses is rejected. Services-only hosts send internet traffic directly and keep the usual bypass and blocking behaviour for services.
+- The watchdog finds Ziti controllers and routers from the identities and the tunnel's state. Hosts reached through source-zone devices bypass the tunnel completely (`direct_fabric`, on by default). If an endpoint uses the router's own address, the watchdog looks for one matching WAN port forward to a source-zone host. The router's own traffic to classified fabric addresses and the IPv4 DNS servers selected for their names uses routes outside the tunnel. Addresses that cannot be classified get no destination exception. The Status page lists the hosts found.
+- New connections from WAN get a connection mark, and marked replies use routes outside the tunnel. This covers port forwards and connections to services on the router. Previously, the `/1` routes of a full tunnel could send replies into the tunnel and break the connection. One WAN is supported; replies are not pinned to the incoming WAN.
+
+### Changed
+
+- A pending or saved allocation keeps its `bypass_table`, `bypass_priority` and new `reply_mark` values until a reboot or successful uninstall and reallocation. This keeps live rules and marked connections on their original settings. Exceptions use the next two tables and the six priorities before the bypass rule. `bypass_priority` must be from 7 to 32700.
+- Early blocking rules are checked against the kernel on every pass: a missing rule is added again, and one that could not be removed is retried.
+- "Additional watchdog settings" is renamed "Additional settings".
+
+### Fixed
+
+- The tunneler could leave `nameserver 198.18.0.2` in the router's resolver file after startup or interface events. That could make fabric DNS lookups use the OpenZiti resolver and wait for it during a failure. The tunneler now writes to `/var/run/ziti-edge-tunnel/resolv.conf`, and the watchdog excludes `198.18.0.0/16` when selecting upstream DNS servers for fabric names. The package does not remove lines written by earlier releases; they remain until the affected file is rewritten or the line is removed by hand.
+- During bypass, the bypass table was emptied and refilled whenever the main table changed, so traffic could reach the tunnel's routes for a moment; without a WAN default route it fell through to them. The table is now updated without being emptied and ends in an unreachable default route.
+- While the tunnel was starting, the cached service prefixes were replaced by the few routes already back, which lifted blocking for the other services. Pruning now waits for the configured number of healthy checks and for all active identities to be reported authenticated. It still uses the tunnel's routes in the main table, so a service route that was not installed can drop out of the cache.
+- Routing settings are checked before use. Missing or malformed decimal values use defaults. When a new exception allocation is checked, out-of-range table or priority values, or an invalid `reply_mark`, turn exceptions off with a warning. Without an allocation, bypass uses defaults for an invalid table or priority.
+- Routing table names from `/etc/iproute2/rt_tables` no longer confuse the watchdog's check of its own rules.
+- Error messages from enrollment and upgrades are escaped with jshn, so quotes, backslashes and control characters no longer break the JSON sent to LuCI.
+- LuCI takes the background-operation lock before staging work and checks its owner and age before reclaiming it. This improves normal admission, but reclaiming a stale lock can still admit two jobs.
+- `install.sh` downloads the feed key into a private temporary file instead of a fixed path in `/tmp`.
+- When group IDs 900 to 999 were all taken, the package added the `ziti` group with an unchecked ID. It now logs the problem and adds no group.
+- Changes to the dnsmasq server list and to the firewall are now made in one `uci batch` each. The watchdog handles a normal stop between steps, but a batch is not a transaction: forced termination can still leave partial changes pending until the next commit.
+- A quick command could stop its timeout timer before the timer had set a variable, logging "s: parameter not set". The variable is now set before the stop handler is installed.
+- Failure to create a temporary file while preparing bypass routes now reports failure and removes any temporary file already created.
+- Bypass records its table and priority before adding rules, so an interrupted activation can resume on the next pass. Cleanup removes only a recorded bypass.
+- New bypass rules are added for an address family only when its table has the terminal unreachable route. The probe rule and table rule are checked separately, and a missing one is repaired.
+- Exception policy rules are added or changed only after both exception tables have been built in that pass.
+- If exception policy rules cannot be removed, their tables and allocation records are kept.
+- Uninstall waits up to 15 seconds for the guard, fabric worker and tunneler to stop, then sends SIGKILL to leftovers. Early blocking rules are removed from their record; uninstall no longer deletes every rule at the two blocking priorities. The fallback sweep of the six exception priorities remains.
+- The watchdog checks its stop flag before restarting the tunnel. A fabric worker that has not stopped after five seconds is killed.
+- Enrollment output is written to a private temporary file instead of a predictable path in `/tmp`.
+
 ## 1.18.7-r24 - 2026-11-07
 
 ### Added

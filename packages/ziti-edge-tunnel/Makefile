@@ -87,6 +87,15 @@ CMAKE_OPTIONS += \
 	-Dunofficial-sodium_DIR=$(PKG_BUILD_DIR)/.cmake-shims/unofficial-sodium \
 	-DDISABLE_LIBSYSTEMD_FEATURE=ON
 
+# The tunneler falls back to editing /etc/resolv.conf when no resolver helper is
+# available. On OpenWrt this can change a shared resolver file. Keep the write in
+# a private runtime file and disable the resolvconf and busctl helper paths.
+# The escaping preserves quoted paths through the shell and CMake.
+TARGET_CFLAGS += \
+	-DRESOLV_CONF_FILE=\\\"/var/run/ziti-edge-tunnel/resolv.conf\\\" \
+	-DRESOLVCONF=\\\"/var/run/ziti-edge-tunnel/no-resolver-helper\\\" \
+	-DBUSCTL=\\\"/var/run/ziti-edge-tunnel/no-resolver-helper\\\"
+
 # Drop the vcpkg-name shim into the source tree before cmake configure
 # runs. It re-exports OpenWRT's libsodium under the "unofficial-sodium"
 # CMake target name that ziti-sdk-c expects.
@@ -137,11 +146,14 @@ chmod 0700 /etc/ziti/identities 2>/dev/null
 # free system-range gid.
 if ! grep -q '^ziti:' /etc/group; then
 	gid=900
-	while grep -q ":$${gid}:" /etc/group; do
+	while [ $${gid} -lt 1000 ] && awk -F: -v g=$${gid} '$$3 == g { f = 1 } END { exit !f }' /etc/group; do
 		gid=$$((gid + 1))
-		[ $${gid} -ge 1000 ] && break
 	done
-	echo "ziti:x:$${gid}:" >> /etc/group
+	if [ $${gid} -lt 1000 ]; then
+		echo "ziti:x:$${gid}:" >> /etc/group
+	else
+		logger -t ziti "no free group id from 900 to 999 for the ziti group"
+	fi
 fi
 
 /usr/libexec/ziti-boot-guard setup

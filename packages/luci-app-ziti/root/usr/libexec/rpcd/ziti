@@ -23,25 +23,20 @@ JOB_DIR="/var/run/ziti-job"
 
 # ---------- helpers ----------
 
-json_escape() {
-	# Minimal JSON string escape for shell-built strings.
-	awk 'BEGIN{
-		s=""
-		while ((getline line) > 0) {
-			if (s != "") s = s "\\n"
-			gsub(/\\/, "\\\\", line)
-			gsub(/"/, "\\\"", line)
-			gsub(/\t/, "\\t", line)
-			gsub(/\r/, "", line)
-			s = s line
-		}
-		print s
-	}'
-}
-
+# emit_error "code" "message": jshn escapes whatever the message holds. It reads unset
+# variables, so it runs in a subshell without set -u.
 emit_error() {
-	# emit_error "code" "message"
-	printf '{"error":{"code":"%s","message":"%s"}}\n' "$1" "$2"
+	(
+		set +u
+		# shellcheck disable=SC1091
+		. /usr/share/libubox/jshn.sh
+		json_init
+		json_add_object error
+		json_add_string code "$1"
+		json_add_string message "$2"
+		json_close_object
+		json_dump
+	)
 }
 
 # ---------- background jobs ----------
@@ -54,19 +49,39 @@ job_running() {
 	[ ! -e "$JOB_DIR/result" ] && [ -s "$JOB_DIR/pid" ] && kill -0 "$(cat "$JOB_DIR/pid")" 2>/dev/null
 }
 
-# job_start <name> <function> [args...]
-job_start() {
-	local name="$1"
-	shift
-	if job_running; then
+# One job at a time: the lock directory is taken before anything is staged, so two
+# calls cannot both start. The call that took it leaves its pid there; a lock is taken
+# over only when neither that call nor a job is alive and it is older than a few seconds.
+job_lock() {
+	local owner age
+	mkdir -p "$JOB_DIR"
+	chmod 0700 "$JOB_DIR"
+	if mkdir "$JOB_DIR/lock" 2>/dev/null; then
+		echo "$$" > "$JOB_DIR/lock/owner"
+		return 0
+	fi
+	owner=$(cat "$JOB_DIR/lock/owner" 2>/dev/null)
+	age=$(( $(date +%s) - $(date -r "$JOB_DIR/lock" +%s 2>/dev/null || date +%s) ))
+	if job_running || { [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; } || [ "$age" -lt 5 ]; then
 		emit_error "busy" "$(cat "$JOB_DIR/name" 2>/dev/null)"
 		return 1
 	fi
-	mkdir -p "$JOB_DIR"
-	chmod 0700 "$JOB_DIR"
+	rm -rf "$JOB_DIR/lock"
+	if mkdir "$JOB_DIR/lock" 2>/dev/null; then
+		echo "$$" > "$JOB_DIR/lock/owner"
+		return 0
+	fi
+	emit_error "busy" ""
+	return 1
+}
+
+# job_start <name> <function> [args...], with the lock held. The job gives it back.
+job_start() {
+	local name="$1"
+	shift
 	rm -f "$JOB_DIR/result"
 	echo "$name" > "$JOB_DIR/name"
-	( "$@" > "$JOB_DIR/result.new" 2>/dev/null; mv "$JOB_DIR/result.new" "$JOB_DIR/result" ) \
+	( "$@" > "$JOB_DIR/result.new" 2>/dev/null; mv "$JOB_DIR/result.new" "$JOB_DIR/result"; rm -rf "$JOB_DIR/lock" ) \
 		</dev/null >/dev/null 2>&1 &
 	echo "$!" > "$JOB_DIR/pid"
 	printf '{"ok":true,"job":"%s"}\n' "$name"
@@ -87,15 +102,17 @@ method_job_status() {
 # ---------- methods ----------
 
 method_status() {
-	local running=false autostart=false version="" state
+	local running=false autostart=false version="" state guard
 	pidof ziti-edge-tunnel >/dev/null 2>&1 && running=true
 	"$INIT" enabled 2>/dev/null && autostart=true
 	version="$("$ZET_BIN" version 2>/dev/null | head -n1 | tr -d '\r\n')"
 	# The binary prints the build's git version twice: v1.2.3.v1.2.3.
 	version="${version%%.v*}"
-	state=$("$GUARD" state | jsonfilter -e '@.state')
-	printf '{"running":%s,"autostart":%s,"version":"%s","state":"%s"}\n' \
-		"$running" "$autostart" "$version" "$state"
+	# The guard's own JSON goes along whole: fabric hosts, warnings, settings waiting for a reboot.
+	guard=$("$GUARD" state)
+	state=$(printf '%s' "$guard" | jsonfilter -e '@.state' 2>/dev/null) || guard='{}'
+	printf '{"running":%s,"autostart":%s,"version":"%s","state":"%s","guard":%s}\n' \
+		"$running" "$autostart" "$version" "$state" "${guard:-\{\}}"
 }
 
 method_list_identities() {
@@ -111,18 +128,20 @@ method_enroll() {
 		return
 	fi
 
+	job_lock || return
 	# A private directory in RAM: JWTs are one-time secrets, and a file left behind by a
 	# killed call stays out of flash and backups and is gone after a reboot.
 	mkdir -p "$JWT_STAGE_DIR"
 	chmod 0700 "$JWT_STAGE_DIR"
-	# With no job running, any token here is left from a job that was killed.
-	job_running || rm -f "$JWT_STAGE_DIR"/jwt.*
+	# With the lock held and no job running, any token here is left from a killed job.
+	rm -f "$JWT_STAGE_DIR"/jwt.*
 	jwt_file="$(mktemp -p "$JWT_STAGE_DIR" jwt.XXXXXX)" || {
+		rm -rf "$JOB_DIR/lock"
 		emit_error "io_error" "cannot create staging file"
 		return
 	}
 	printf '%s' "$jwt" > "$jwt_file"
-	job_start enroll do_enroll "$jwt_file" || rm -f "$jwt_file"
+	job_start enroll do_enroll "$jwt_file"
 }
 
 # The job owns the token file and removes it however enrollment ends.
@@ -135,7 +154,7 @@ do_enroll() {
 		# The guard prints a reason word, followed by text only for an unknown failure.
 		code=${out%% *}
 		[ "$code" = "$out" ] || message=${out#* }
-		emit_error "$code" "$(printf '%s' "$message" | json_escape)"
+		emit_error "$code" "$message"
 		return
 	fi
 	printf '{"ok":true,"id":"%s"}\n' "$out"
@@ -240,7 +259,7 @@ _oz_versions() {
 	_oz_newer "$OTHER" "${CANDIDATE:-$INSTALLED}" || OTHER=""
 }
 
-method_check_update() { job_start check do_check; }
+method_check_update() { job_lock && job_start check do_check; }
 
 do_check() {
 	local feed upgradable=false
@@ -255,7 +274,7 @@ do_check() {
 		"$INSTALLED" "$CANDIDATE" "$OTHER" "$feed" "$upgradable"
 }
 
-method_upgrade_zet() { job_start upgrade do_upgrade; }
+method_upgrade_zet() { job_lock && job_start upgrade do_upgrade; }
 
 do_upgrade() {
 	if ! _oz_update_feed; then
@@ -270,7 +289,7 @@ do_upgrade() {
 	fi
 	out=$(apk add --upgrade ziti-edge-tunnel 2>&1); rc=$?
 	if [ $rc -ne 0 ]; then
-		emit_error "install_failed" "$(printf '%s' "$out" | json_escape)"
+		emit_error "install_failed" "$out"
 		return
 	fi
 	/etc/init.d/ziti-edge-tunnel restart >/dev/null 2>&1

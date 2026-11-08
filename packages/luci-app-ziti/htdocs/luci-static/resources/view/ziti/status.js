@@ -59,6 +59,20 @@ function stateLabel(state) {
 	}
 }
 
+// The watchdog reports warnings as "code argument...".
+function warningText(w) {
+	var a = w.split(' ');
+	switch (a[0]) {
+	case 'invalid_settings': return _('The watchdog could not enable tunnel exceptions: the bypass rule priority, bypass table or reply mark was invalid.');
+	case 'table_taken':      return _('The watchdog could not enable tunnel exceptions: routing table %s or %s was not empty.').format(a[1], a[2]);
+	case 'priority_taken':   return _('The watchdog could not enable tunnel exceptions: routing rule priority %s was already in use.').format(a[1]);
+	case 'several_wan':      return _('The watchdog found default routes on more than one device. Replies to connections from WAN may leave through a different WAN.');
+	case 'bypass_taken':     return _('The watchdog could not enable bypass: routing table %s or rule priority %s was already in use.').format(a[1], a[2]);
+	case 'nft_rejected':     return _('The generated firewall rules for replies to WAN connections were rejected by nft.');
+	default:                 return w;
+	}
+}
+
 return view.extend({
 	handleSaveApply: null,
 	handleSave:      null,
@@ -70,6 +84,32 @@ return view.extend({
 
 	render: function (data) {
 		data = data || {};
+		var guard = data.guard || {}, fabric = Array.isArray(guard.fabric) ? guard.fabric : [];
+
+		function hosts(cls) {
+			return fabric.filter(function (h) { return h.class == cls; }).map(function (h) {
+				var text = h.name + ' (' + h.ip + (h.target && h.target != '-' && h.target != h.ip ? ' → ' + h.target : '') + ')';
+				return E('div', {}, text);
+			});
+		}
+
+		var extra = [];
+		var lan = hosts('lan'), outside = hosts('public'), unresolved = hosts('unresolved');
+		if (lan.length)
+			extra.push(row(_('Ziti hosts in the LAN'), lan,
+				_('Controllers and routers found in the source zones. With Ziti hosts in the LAN bypass the tunnel enabled, their traffic from those zones bypasses the tunnel completely.')));
+		if (outside.length)
+			extra.push(row(_('Ziti hosts outside the source zones'), outside,
+				_('The router reaches these controllers and routers around the tunnel.')));
+		if (unresolved.length)
+			extra.push(row(_('Ziti hosts with unknown location'), unresolved,
+				_('The watchdog could not determine their location. If a host is in a source zone, add its address under Bypass the tunnel completely.')));
+		(Array.isArray(guard.warnings) ? guard.warnings : []).forEach(function (w) {
+			extra.push(E('div', { 'class': 'alert-message warning' }, warningText(String(w))));
+		});
+		if (guard.pending)
+			extra.push(E('div', { 'class': 'alert-message notice' },
+				_('Changes to the bypass table, bypass rule priority or reply mark take effect after a reboot.')));
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('OpenZiti Status')),
@@ -87,7 +127,7 @@ return view.extend({
 					actionButton(_('Stop'), 'stop', 'negative'), ' ',
 					actionButton(_('Restart'), 'restart', 'action')
 				])
-			])
+			].concat(extra))
 		]);
 	}
 });

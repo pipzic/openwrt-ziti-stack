@@ -152,6 +152,39 @@ return view.extend({
 				return f;
 			});
 
+		var xs = m.section(form.NamedSection, 'main', 'ziti', _('Exceptions'),
+			_('Choose which hosts in the source zones bypass the tunnel completely or use it only for services. Marked replies to connections from WAN use routes outside the tunnel. One WAN is supported.'));
+		xs.anonymous = true;
+
+		o = xs.option(form.Flag, 'direct_fabric', _('Ziti hosts in the LAN bypass the tunnel'),
+			_('Controllers and routers of this OpenZiti network found in the source zones bypass the tunnel completely. The Status page lists the hosts found.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = xs.option(form.DynamicList, 'direct_sources', _('Bypass the tunnel completely'),
+			_('These addresses or subnets use neither the internet exit nor services through the tunnel.'));
+		o.datatype = 'ip4addr';
+		o.placeholder = '192.168.1.10';
+
+		o = xs.option(form.DynamicList, 'services_sources', _('Tunnel only for services'),
+			_('These addresses or subnets reach services through the tunnel, while their internet traffic goes directly.'));
+		o.datatype = 'ip4addr';
+		o.placeholder = '192.168.1.0/24';
+
+		function mark(section, name) {
+			var f = section.option(form.Value, name, ' ');
+			f.placeholder = '0x20000000';
+			f.validate = function (section_id, value) {
+				if (value == '')
+					return true;
+				var n = /^0x[0-9a-fA-F]{1,8}$/.test(value) ? parseInt(value, 16) : (/^[0-9]{1,10}$/.test(value) ? parseInt(value, 10) : NaN);
+				if (n > 0 && n <= 0xffffffff && (n & (n - 1)) == 0)
+					return true;
+				return _('Enter a value with exactly one bit set, for example 0x20000000');
+			};
+			return f;
+		}
+
 		var groups = [
 			[ _('Checks'), [
 				[ 'watchdog_interval', _('Override check interval'), _('Pause between checks, in seconds. Default: 5.'), number(1, '5') ],
@@ -173,15 +206,20 @@ return view.extend({
 				[ 'watchdog_wan_probes', _('Override internet check addresses'), _('Addresses checked outside the tunnel to distinguish an internet outage from an OpenZiti network failure. Default: 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222.'), list('ip4addr', '1.1.1.1') ]
 			] ],
 			[ _('Bypass'), [
-				[ 'bypass_table', _('Override bypass routing table'), _('Routing table used for bypass. Changes take effect the next time bypass is enabled. Default: 1890.'), number(256, '1890') ],
-				[ 'bypass_priority', _('Override bypass rule priority'), _('Priority of the routing rule that selects the bypass table. Changes take effect the next time bypass is enabled. Default: 100.'), number(1, '100', 32765) ]
+				[ 'bypass_table', _('Override bypass routing table'), _('Routing table used for bypass. The tunnel exceptions use the next two tables. Changes take effect after a reboot. Default: 1890.'), number(256, '1890') ],
+				[ 'bypass_priority', _('Override bypass rule priority'), _('Priority of the routing rule that selects the bypass table. The tunnel exceptions use the six priorities before it, early blocking the two after it. Changes take effect after a reboot. Default: 100.'), number(7, '100', 32700) ]
+			] ],
+			[ _('Exceptions'), [
+				[ 'reply_mark', _('Override reply mark'), _('Connection mark bit for connections that came in from WAN. Choose another bit if other software uses this one. Changes take effect after a reboot. Default: 0x20000000.'), mark ],
+				[ 'fabric_refresh', _('Override Ziti host search interval'), _('Seconds after a lookup round finishes before the next round starts. Default: 300.'), number(30, '300') ],
+				[ 'fabric_stale', _('Override Ziti host lifetime'), _('Seconds since the last confirmation before a cached Ziti host entry expires. Default: 3600.'), number(60, '3600') ]
 			] ]
 		];
 
 		// The list stays open while something in it is overridden, so a change is never hidden.
 		var as = m.section(CollapsedSection, 'main', 'ziti');
 		as.anonymous = true;
-		as.summary = _('Additional watchdog settings');
+		as.summary = _('Additional settings');
 		as.open = groups.some(function (g) {
 			return g[1].some(function (a) { return uci.get('ziti', 'main', a[0]) != null; });
 		});

@@ -23,11 +23,16 @@ uclient-fetch -q -O /dev/null "$REPO" || {
 	exit 1
 }
 
-TMP_KEY="/tmp/$KEY_NAME"
+# A private file with a name nobody can guess, removed however the script ends.
+umask 077
+TMP_KEY="$(mktemp /tmp/ziti-key.XXXXXX)"
+trap 'rm -f "$TMP_KEY"' EXIT INT TERM
 uclient-fetch -q -O "$TMP_KEY" "$FEED/$KEY_NAME"
 echo "$KEY_SHA256  $TMP_KEY" | sha256sum -c -
+umask 022
 mkdir -p /etc/apk/keys /etc/apk/repositories.d
 mv "$TMP_KEY" "/etc/apk/keys/$KEY_NAME"
+chmod 0644 "/etc/apk/keys/$KEY_NAME"
 echo "$REPO" > /etc/apk/repositories.d/openwrt-ziti-stack.list
 
 apk update

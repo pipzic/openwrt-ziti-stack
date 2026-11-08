@@ -38,7 +38,25 @@ config ziti 'main'
 	# Installed rules prevent source-zone traffic to cached non-default service prefixes
 	# from falling back to less specific routes before the next check.
 	# option block_on_failure '0'
-	# Routing table and rule priority of the bypass. A running bypass keeps its old ones.
-	# Blocking rules use bypass_priority + 1 and bypass_priority + 2.
+	# Routing table and rule priority of the bypass. Exceptions use tables bypass_table + 1
+	# and + 2 and priorities bypass_priority - 6 to - 1; blocking rules use + 1 and + 2.
+	# Choose tables and priorities not used by other packages.
+	# A pending or saved allocation keeps its values until reboot or successful uninstall
+	# and reallocation.
 	# option bypass_table '1890'
 	# option bypass_priority '100'
+	# Exceptions. Controllers and routers of this OpenZiti network found in source zones
+	# bypass the tunnel completely.
+	# option direct_fabric '1'
+	# Addresses or subnets that bypass the tunnel completely.
+	# list direct_sources '192.168.1.10'
+	# Addresses or subnets that use the tunnel only for services.
+	# list services_sources '192.168.1.0/24'
+	# Connection mark bit for connections from WAN. Choose a bit not used by other software.
+	# A pending or saved allocation keeps its value until reboot or successful uninstall
+	# and reallocation.
+	# option reply_mark '0x20000000'
+	# Seconds from the end of a lookup round to the next round, and the maximum age
+	# of a cached host entry since its last confirmation.
+	# option fabric_refresh '300'
+	# option fabric_stale '3600'

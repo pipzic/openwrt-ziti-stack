@@ -16,6 +16,8 @@ IDENTITY_DIR=/etc/ziti/identities
 DNS_RANGE=198.18.0.1/16
 STOP_MARK=/var/run/ziti-stopped
 START_MARK=/var/run/ziti-started
+# The tunneler is built to write its resolver line here instead of /etc/resolv.conf.
+RESOLV_DIR=/var/run/ziti-edge-tunnel
 
 # Map UCI log_level to ZET --verbose 0..6.
 verbosity_for() {
@@ -46,6 +48,8 @@ start_service() {
 
 	rm -f "$STOP_MARK"
 	date +%s > "$START_MARK"
+	mkdir -p "$RESOLV_DIR"
+	[ -e "$RESOLV_DIR/resolv.conf" ] || echo "nameserver 127.0.0.1" > "$RESOLV_DIR/resolv.conf"
 	/etc/init.d/ziti-guard start >/dev/null 2>&1
 
 	# ZET exits without an identity, and procd would respawn it forever.

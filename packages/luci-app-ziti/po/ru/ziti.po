@@ -19,9 +19,6 @@ msgstr "Действие"
 msgid "Active"
 msgstr "Активна"
 
-msgid "Additional watchdog settings"
-msgstr "Дополнительные параметры watchdog"
-
 msgid "Addresses checked outside the tunnel to distinguish an internet outage from an OpenZiti network failure. Default: 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222."
 msgstr "Адреса для проверки в обход туннеля, чтобы отличить потерю доступа к интернету от сбоя сети OpenZiti. По умолчанию: 1.1.1.1, 8.8.8.8, 9.9.9.9, 208.67.222.222."
 
@@ -235,9 +232,6 @@ msgstr "Переопределить тайм-аут ответа туннеля
 msgid "Pause between checks, in seconds. Default: 5."
 msgstr "Пауза между проверками в секундах. По умолчанию: 5."
 
-msgid "Priority of the routing rule that selects the bypass table. Changes take effect the next time bypass is enabled. Default: 100."
-msgstr "Приоритет правила маршрутизации, выбирающего таблицу обхода. Изменения применяются при следующем включении обхода. По умолчанию: 100."
-
 msgid "Refreshing the feed and verifying its signature..."
 msgstr "Обновление репозитория и проверка подписи…"
 
@@ -255,9 +249,6 @@ msgstr "Перезапустить"
 
 msgid "Restarts"
 msgstr "Перезапуски"
-
-msgid "Routing table used for bypass. Changes take effect the next time bypass is enabled. Default: 1890."
-msgstr "Таблица маршрутизации для обхода туннеля. Изменения применяются при следующем включении обхода. По умолчанию: 1890."
 
 msgid "Select a JWT file."
 msgstr "Выберите файл JWT."
@@ -402,3 +393,96 @@ msgstr "В другом репозитории есть более новая в
 
 msgid "Tunnel process exited; waiting for procd to restart it"
 msgstr "Процесс туннеля завершился; ожидается перезапуск через procd"
+
+msgid "Additional settings"
+msgstr "Дополнительные настройки"
+
+msgid "Bypass the tunnel completely"
+msgstr "Полностью обходить туннель"
+
+msgid "Changes to the bypass table, bypass rule priority or reply mark take effect after a reboot."
+msgstr "Изменения таблицы обхода, приоритета правила обхода или метки ответов вступят в силу после перезагрузки."
+
+msgid "Connection mark bit for connections that came in from WAN. Choose another bit if other software uses this one. Changes take effect after a reboot. Default: 0x20000000."
+msgstr "Бит метки соединения для соединений с WAN. Выберите другой бит, если этот уже используется другим ПО. Изменения вступают в силу после перезагрузки. По умолчанию: 0x20000000."
+
+msgid "Controllers and routers found in the source zones. With Ziti hosts in the LAN bypass the tunnel enabled, their traffic from those zones bypasses the tunnel completely."
+msgstr "Контроллеры и роутеры, найденные в зонах источника. Если включено «Узлы Ziti из LAN обходят туннель», их трафик из этих зон полностью обходит туннель."
+
+msgid "Controllers and routers of this OpenZiti network found in the source zones bypass the tunnel completely. The Status page lists the hosts found."
+msgstr "Контроллеры и роутеры этой сети OpenZiti, найденные в зонах источника, полностью обходят туннель. Найденные узлы показаны на странице «Статус»."
+
+msgid "Enter a value with exactly one bit set, for example 0x20000000"
+msgstr "Введите число с одним установленным битом, например 0x20000000"
+
+msgid "Exceptions"
+msgstr "Исключения"
+
+msgid "Choose which hosts in the source zones bypass the tunnel completely or use it only for services. Marked replies to connections from WAN use routes outside the tunnel. One WAN is supported."
+msgstr "Выберите узлы в зонах источника, которые полностью обходят туннель или используют его только для сервисов. Ответы с меткой на соединения с WAN идут по маршрутам вне туннеля. Поддерживается один WAN."
+
+msgid "Seconds since the last confirmation before a cached Ziti host entry expires. Default: 3600."
+msgstr "Срок хранения записи об узле Ziti в секундах с последнего подтверждения. По умолчанию: 3600."
+
+msgid "Seconds after a lookup round finishes before the next round starts. Default: 300."
+msgstr "Пауза в секундах между завершением поиска и началом следующего. По умолчанию: 300."
+
+msgid "The watchdog found default routes on more than one device. Replies to connections from WAN may leave through a different WAN."
+msgstr "Watchdog обнаружил маршруты по умолчанию через несколько устройств. Ответы на соединения с WAN могут уйти через другой WAN."
+
+msgid "Override Ziti host lifetime"
+msgstr "Переопределить срок хранения записей об узлах Ziti"
+
+msgid "Override Ziti host search interval"
+msgstr "Переопределить интервал поиска узлов Ziti"
+
+msgid "Override reply mark"
+msgstr "Переопределить метку ответов"
+
+msgid "Priority of the routing rule that selects the bypass table. The tunnel exceptions use the six priorities before it, early blocking the two after it. Changes take effect after a reboot. Default: 100."
+msgstr "Приоритет правила маршрутизации, выбирающего таблицу обхода. Исключения из туннеля используют шесть приоритетов перед ним, ранняя блокировка — два после него. Изменения вступают в силу после перезагрузки. По умолчанию: 100."
+
+msgid "The watchdog could not enable tunnel exceptions: routing rule priority %s was already in use."
+msgstr "Watchdog не смог включить исключения из туннеля: приоритет правила маршрутизации %s уже был занят."
+
+msgid "The watchdog could not enable tunnel exceptions: routing table %s or %s was not empty."
+msgstr "Watchdog не смог включить исключения из туннеля: таблица маршрутизации %s или %s была непустой."
+
+msgid "Routing table used for bypass. The tunnel exceptions use the next two tables. Changes take effect after a reboot. Default: 1890."
+msgstr "Таблица маршрутизации для обхода туннеля. Исключения из туннеля используют две следующие таблицы. Изменения вступают в силу после перезагрузки. По умолчанию: 1890."
+
+msgid "The watchdog could not enable tunnel exceptions: the bypass rule priority, bypass table or reply mark was invalid."
+msgstr "Watchdog не смог включить исключения из туннеля: были неверно заданы приоритет правила обхода, таблица обхода или метка ответов."
+
+msgid "The generated firewall rules for replies to WAN connections were rejected by nft."
+msgstr "nft отклонил созданные правила firewall для ответов на соединения с WAN."
+
+msgid "The router reaches these controllers and routers around the tunnel."
+msgstr "Роутер обращается к этим контроллерам и роутерам мимо туннеля."
+
+msgid "The watchdog could not determine their location. If a host is in a source zone, add its address under Bypass the tunnel completely."
+msgstr "Watchdog не смог определить их расположение. Если узел находится в зоне источника, добавьте его адрес в «Полностью обходить туннель»."
+
+msgid "These addresses or subnets reach services through the tunnel, while their internet traffic goes directly."
+msgstr "Эти адреса или подсети обращаются к сервисам через туннель, а в интернет ходят напрямую."
+
+msgid "These addresses or subnets use neither the internet exit nor services through the tunnel."
+msgstr "Эти адреса или подсети не используют ни выход в интернет, ни сервисы через туннель."
+
+msgid "Tunnel only for services"
+msgstr "Туннель только для сервисов"
+
+msgid "Ziti hosts in the LAN"
+msgstr "Узлы Ziti в LAN"
+
+msgid "Ziti hosts in the LAN bypass the tunnel"
+msgstr "Узлы Ziti из LAN обходят туннель"
+
+msgid "Ziti hosts with unknown location"
+msgstr "Узлы Ziti с неизвестным расположением"
+
+msgid "Ziti hosts outside the source zones"
+msgstr "Узлы Ziti вне зон источника"
+
+msgid "The watchdog could not enable bypass: routing table %s or rule priority %s was already in use."
+msgstr "Watchdog не смог включить обход туннеля: таблица маршрутизации %s или приоритет правила %s уже были заняты."
