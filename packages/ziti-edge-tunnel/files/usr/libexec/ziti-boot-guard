@@ -1145,13 +1145,23 @@ fabric_stop() {
 	rm -rf "$FABRIC_LOCK"
 }
 
-# Takes a finished result of the current snapshot into the host list, drops hosts that
-# left the fabric or have not been confirmed for fabric_stale seconds, and starts the
-# next batch when one is due. Hosts: "host ip class target confirmed-at".
+# Drops hosts that left the fabric of snapshot $1 or have not been confirmed for
+# fabric_stale seconds. Hosts: "host ip class target confirmed-at".
+fabric_prune() {
+	local tmp
+	touch "$FABRIC_HOSTS"
+	tmp=$(mktemp) || return 0
+	awk -v now="$(date +%s)" -v stale="$(cfg_num fabric_stale 3600)" '
+		FILENAME == ARGV[1] { if ($1 == "E") e[$2] = 1; next }
+		($1 in e) && now - $5 <= stale' "$1" "$FABRIC_HOSTS" > "$tmp"
+	mv "$tmp" "$FABRIC_HOSTS"
+}
+
+# Takes a finished result of the current snapshot into the host list, prunes it, and
+# starts the next batch when one is due.
 fabric_tick() {
-	local snap="$1" gen now stale cur_gen cursor complete due tmp
+	local snap="$1" gen now cur_gen cursor complete due tmp
 	now=$(date +%s)
-	stale=$(cfg_num fabric_stale 3600)
 	gen=$(md5sum < "$snap" | cut -d' ' -f1)
 	read -r cur_gen cursor complete due 2>/dev/null < "$FABRIC_STATE" || cur_gen=""
 	if [ "$gen" != "$cur_gen" ]; then
@@ -1178,10 +1188,7 @@ fabric_tick() {
 		fi
 		rm -f "$FABRIC_RESULT"
 	fi
-	tmp=$(mktemp) || return 0
-	awk -v now="$now" -v stale="$stale" 'FILENAME == ARGV[1] { if ($1 == "E") e[$2] = 1; next }
-		($1 in e) && now - $5 <= stale' "$snap" "$FABRIC_HOSTS" > "$tmp"
-	mv "$tmp" "$FABRIC_HOSTS"
+	fabric_prune "$snap"
 	echo "$gen ${cursor:-0} ${complete:-0} ${due:-0}" > "$FABRIC_STATE"
 	if ! fabric_worker_alive && { [ "${complete:-0}" != 1 ] || [ "$now" -ge "${due:-0}" ]; }; then
 		# A lock left by a worker that died is taken over.
@@ -1301,6 +1308,8 @@ exceptions_pass() {
 	underlay_sync "$acc" || ok=0 tables=0
 	replies_sync "$A_MARK" "$(wan_devices "$acc")" || ok=0
 	fabric_snapshot "$acc" "$rej" > "$snap"
+	# Hosts that went stale or left the fabric lose their rules in this pass, not the next.
+	fabric_prune "$snap"
 	policy_rules_want "$snap" > "$want"
 	# Rules only select tables that were built; until then the rules in place stay as they are.
 	if [ "$tables" = 1 ]; then
