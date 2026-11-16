@@ -254,7 +254,7 @@ fabric_dns_sync() {
 	dir=$(dnsmasq_conf_dir)
 	[ -n "$dir" ] || return 0
 	file="$dir/ziti-fabric.conf"
-	tmp=$(mktemp) || return 0
+	tmp=$(mktemp) || return 1
 	fabric_names | while IFS= read -r name; do
 		for s in $(fabric_servers "$name"); do
 			echo "server=/$name/$s"
@@ -297,7 +297,7 @@ remember_service_names() {
 # It uses routes in main, so a service route that was not installed can leave the cache.
 remember_service_prefixes() {
 	local mode="${1:-merge}" tmp fam p
-	tmp=$(mktemp) || return 0
+	tmp=$(mktemp) || return 1
 	{
 		for fam in -4 -6; do
 			ip "$fam" route show table main | awk '/ dev ziti0/ {print $1}' | while read -r p; do
@@ -496,8 +496,8 @@ block_rules_want() {
 }
 
 block_rules_sync() {
-	local want before
-	want=$(mktemp) || return 0
+	local want before rc=0
+	want=$(mktemp) || return 1
 	block_rules_want > "$want"
 	# Blocking off, nothing recorded and nothing left to delete: no rules to compare.
 	if [ ! -s "$want" ] && [ ! -s "$BLOCK_RULES" ] && [ ! -e "$BLOCK_RULES.del" ]; then
@@ -505,7 +505,7 @@ block_rules_sync() {
 		return 0
 	fi
 	before=$(cat "$BLOCK_RULES" 2>/dev/null)
-	rules_sync "$BLOCK_RULES" "$want"
+	rules_sync "$BLOCK_RULES" "$want" || rc=1
 	if [ "$(cat "$BLOCK_RULES" 2>/dev/null)" != "$before" ]; then
 		if [ -s "$BLOCK_RULES" ]; then
 			log "early blocking on: $(awk '/unreachable/ {print $4}' "$BLOCK_RULES" | sort -u | tr '\n' ' ')"
@@ -514,11 +514,12 @@ block_rules_sync() {
 		fi
 	fi
 	rm -f "$want"
+	return "$rc"
 }
 
 # ---- firewall zones ----
 # fw4 loads the whole firewall model on every call, about 60 ms of CPU on a small router.
-# The watchdog asks it once per pass for each zone and keeps the answers in ZONE_TABLE:
+# The watchdog asks it once per sync for each zone and keeps the answers in ZONE_TABLE:
 # "zone device" lines, or "zone" alone for a zone without devices. Other commands ask fw4
 # directly.
 ZONE_TABLE=""
@@ -532,7 +533,7 @@ zone_names() {
 		| grep -E '^[A-Za-z0-9_]+$' | sort -u
 }
 
-# Every zone with its devices, from this pass's table or from fw4.
+# Every zone with its devices, from the table of the last sync or from fw4.
 zone_table() {
 	local z d
 	if [ "$ZONES_LOADED" = 1 ]; then
@@ -545,7 +546,7 @@ zone_table() {
 	done
 }
 
-# Fills the table for this pass. Run in the main shell: a subshell would lose it.
+# Fills the table at each sync. Run in the main shell: a subshell would lose it.
 zones_load() {
 	ZONES_LOADED=0
 	ZONE_TABLE=$(zone_table)
@@ -629,7 +630,7 @@ rules_still() {
 # Brings the kernel to the rules listed in file $2 and records them in $1. Missing rules
 # go in first and are checked; if one fails, only what this attempt added is taken back
 # and the old record stays. Old rules go after that; one that cannot be removed waits in
-# $1.del for the next pass. Returns 0 only when nothing is missing or left over.
+# $1.del for the next sync. Returns 0 only when nothing is missing or left over.
 rules_sync() {
 	local state="$1" want have missing added old fam prio sel fail=0
 	want=$(mktemp) && have=$(mktemp) && missing=$(mktemp) && added=$(mktemp) && old=$(mktemp) \
@@ -709,7 +710,7 @@ rules_clear() {
 ALLOCATION="/var/run/ziti-allocation"
 WARNINGS="/var/run/ziti-warnings"
 
-# A warning for LuCI, as "code argument...". The list is rebuilt on every pass, so a
+# A warning for LuCI, as "code argument...". The list is rebuilt on every sync, so a
 # warning goes away with its cause; the text $2 is logged when the warning appears.
 warn() {
 	grep -Fxq "$1" "$WARNINGS.new" 2>/dev/null && return 0
@@ -796,7 +797,7 @@ alloc_pending() {
 }
 
 # ---- routes we copy ----
-# One look at main per pass: the routes we can copy, as the kernel prints them, and the
+# One look at main per sync: the routes we can copy, as the kernel prints them, and the
 # ones left out, with the reason, so that classification can see what it is missing.
 TERMINAL="unreachable default metric 4294967295"
 TERMINAL_RE='^unreachable default metric 4294967295$'
@@ -957,7 +958,7 @@ replies_live() {
 	[ "$want" = "$live" ]
 }
 
-# A reload can change the zones' devices, so this pass's table is read again.
+# A reload can change the zones' devices, so the zone table is read again.
 firewall_reload() {
 	/etc/init.d/firewall reload >/dev/null 2>&1
 	[ "$ZONES_LOADED" = 1 ] && zones_load
@@ -1380,14 +1381,17 @@ policy_rules_want() {
 
 POLICY_RULES="/var/run/ziti-policy-rules"
 
-# Every pass: allocation, route tables, reply firewall rules, an input snapshot,
+# Every sync: allocation, route tables, reply firewall rules, an input snapshot,
 # policy rules, then fabric results and lookups. The allocation is saved only
 # after the tables, reply rules and policy rules have converged.
-# Warnings raised since the last pass, here or in the bypass, replace the shown ones.
+# Warnings raised since the last sync, here or in the bypass, replace the shown ones.
+# Returns 1 if the tables, reply rules or policy rules did not converge.
 exceptions_sync() {
-	exceptions_pass
+	local rc=0
+	exceptions_pass || rc=1
 	[ -e "$WARNINGS.new" ] || : > "$WARNINGS.new"
 	mv "$WARNINGS.new" "$WARNINGS"
+	return "$rc"
 }
 
 exceptions_pass() {
@@ -1407,12 +1411,12 @@ exceptions_pass() {
 		set -- $alloc
 		A_PRIO=$1 A_TABLE=$2 A_UTABLE=$3 A_ETABLE=$4 A_MARK=$5
 	fi
-	acc=$(mktemp) && rej=$(mktemp) && snap=$(mktemp) && want=$(mktemp) || return 0
+	acc=$(mktemp) && rej=$(mktemp) && snap=$(mktemp) && want=$(mktemp) || return 1
 	routes_snapshot "$acc" "$rej"
 	underlay_sync "$acc" || ok=0 tables=0
 	replies_sync "$A_MARK" "$(wan_devices "$acc")" || ok=0
 	fabric_snapshot "$acc" "$rej" > "$snap"
-	# Hosts that went stale or left the fabric lose their rules in this pass, not the next.
+	# Hosts that went stale or left the fabric lose their rules in this sync, not the next.
 	fabric_prune "$snap"
 	policy_rules_want "$snap" > "$want"
 	# Rules only select tables that were built; until then the rules in place stay as they are.
@@ -1426,6 +1430,7 @@ exceptions_pass() {
 		rm -f "$ALLOCATION.new"
 	fi
 	rm -f "$acc" "$rej" "$snap" "$want"
+	[ "$ok" = 1 ]
 }
 
 exceptions_clear() {
@@ -1714,8 +1719,34 @@ restart_tunnel() {
 # Started, and Stop was not pressed. With the process gone, it crashed.
 tunnel_wanted() { [ -e "$START_MARK" ] && [ ! -e "$STOP_MARK" ] && [ -n "$(list_identities)" ]; }
 
+# Brings the firewall, DNS and routing rules to the settings. Returns 1 if a step did not
+# converge, so the next pass tries again.
+sync_pass() {
+	local rc=0
+	zones_load
+	fabric_dns_sync || rc=1
+	firewall_sync || rc=1
+	# Service prefixes first: the exception tables and the blocking rules are built from them.
+	remember_service_prefixes || rc=1
+	exceptions_sync || rc=1
+	block_rules_sync || rc=1
+	return "$rc"
+}
+
+# What makes a sync due before its interval: the tunnel starting, stopping, crashing or
+# restarting, a new watchdog state, a new WAN route, changed settings, learned service
+# prefixes, or a fabric lookup result.
+sync_key() {
+	pgrep -f "$ZET run"
+	tunnel_wanted && echo wanted
+	cat "$STATE_FILE" "$START_MARK" 2>/dev/null
+	ip -4 route show table main default 2>/dev/null
+	{ uci -q show ziti; uci -q show firewall; uci -q show dhcp
+		cat "$SERVICE_PREFIXES" "$FABRIC_RESULT" "$FABRIC_HOSTS" 2>/dev/null; } | md5sum
+}
+
 cmd_watchdog() {
-	local interval fails recover health bad=0 good=0
+	local interval fails recover health bad=0 good=0 key now synced="" synced_at=0
 	log "watchdog started"
 	bypass_active && log "bypass already enabled; waiting for tunnel recovery"
 	# A stop request asks the loop to exit between steps; procd may force termination
@@ -1726,13 +1757,15 @@ cmd_watchdog() {
 		interval=$(cfg_num watchdog_interval 5)
 		fails=$(cfg_num watchdog_fails 3)
 		recover=$(cfg_num watchdog_recover 2)
-		zones_load
-		fabric_dns_sync
-		firewall_sync
-		# Service prefixes first: the exception tables and the blocking rules are built from them.
-		remember_service_prefixes
-		exceptions_sync
-		block_rules_sync
+		# The health check runs on every pass, the sync less often. The key is read before
+		# the sync, so a change during it makes the next pass sync again.
+		key=$(sync_key)
+		# Uptime, not the clock: a clock set back must not hold syncs off.
+		now=$(cut -d. -f1 /proc/uptime)
+		if [ "$key" != "$synced" ] || [ $((now - synced_at)) -ge "$(cfg_num watchdog_sync_interval 15)" ]; then
+			if sync_pass; then synced=$key; else synced=""; fi
+			synced_at=$now
+		fi
 		[ "$STOP" = 0 ] || break
 
 		# The state is written before the changes: a dnsmasq restart takes a few seconds.
@@ -1917,8 +1950,8 @@ forwarding_exists() {
 }
 
 # Forwardings into ziti from the zones in source_zones. A zone that does not exist is
-# skipped, and a forwarding the user made is left alone. Runs on every check, so a
-# changed setting applies without a restart.
+# skipped, and a forwarding the user made is left alone. Runs on every sync, and a
+# settings change starts one at once, so it applies without a restart.
 firewall_sync() {
 	local z s want batch=""
 	want=" $(cfg_zones) "

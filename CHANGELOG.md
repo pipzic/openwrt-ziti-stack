@@ -4,6 +4,16 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r27 - 2026-11-16
+
+### Added
+
+- `watchdog_sync_interval` setting, also in LuCI under Additional settings, Checks.
+
+### Changed
+
+- The watchdog checks the tunnel every 5 seconds as before, but syncs the firewall, DNS and routing rules every 15 seconds. A tunnel start, stop or crash, a watchdog state change, a WAN route change or a settings change starts a sync at once. This lowers idle CPU use.
+
 ## 1.18.7-r26 - 2026-11-15
 
 ### Changed

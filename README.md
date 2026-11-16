@@ -230,7 +230,7 @@ These IPv4 exceptions apply to traffic from the source zones. There are also exc
 
 - **Replies to connections from WAN.** The watchdog treats firewall zones containing an IPv4 default-route device as WAN zones. New connections arriving on their devices, including port forwards and connections to services on the router, get a connection mark bit (`reply_mark`, default `0x20000000`). Marked replies use routes outside the tunnel. One WAN is supported: with several WANs, a reply can leave through a different WAN. Already established connections are not marked retroactively.
 - **Bypass the tunnel completely** (`direct_sources`). With the exception rules installed, traffic from these addresses or subnets uses routes outside the tunnel, including traffic to IP-based services. Traffic to service-name addresses (`198.18.0.0/16`) is rejected. If no route outside the tunnel matches, traffic is rejected instead of entering the tunnel.
-- **Tunnel only for services** (`services_sources`). Internet traffic goes directly; services go through the tunnel. On failure, their service traffic follows bypass and blocking like that of any other host. A newly added IP service reaches them through the tunnel from the next check; until then its traffic goes directly. A more specific ordinary route inside a service prefix still wins, as with early blocking.
+- **Tunnel only for services** (`services_sources`). Internet traffic goes directly; services go through the tunnel. On failure, their service traffic follows bypass and blocking like that of any other host. A newly added IP service reaches them through the tunnel from the next sync; until then its traffic goes directly. A more specific ordinary route inside a service prefix still wins, as with early blocking.
 
 **Controllers and routers in the LAN.** The watchdog takes controller and router addresses from the identity files and the tunnel's state (`ziti-edge-tunnel dump`). It resolves names using the DNS forwarding settings described under [DNS](#dns), then classifies each address using the main table's routes outside the tunnel. It does not follow other policy routing tables.
 
@@ -250,7 +250,7 @@ The router's own traffic to addresses classified as LAN or outside uses routes o
 | 97, 98 | Hosts that bypass the tunnel completely: traffic to service-name addresses rejected, everything else in table `1891` |
 | 99 | Hosts that use the tunnel only for services: table `1892` |
 
-Table `1891` copies usable IPv4 routes from the main table and adds an unreachable default route. Tunnel routes, routes marked `linkdown`, multipath routes, nexthop-ID routes, existing `throw` routes and local-address route types are left out. Table `1892` uses the same routes, with `throw` routes for cached service prefixes except `/0` and `/1`, and for `198.18.0.0/16`. These destinations continue to the later bypass, blocking and main-table rules. A copied route with the same prefix is replaced by the `throw` route; more specific copied routes still win. The watchdog checks both tables on every pass and updates them without flushing them.
+Table `1891` copies usable IPv4 routes from the main table and adds an unreachable default route. Tunnel routes, routes marked `linkdown`, multipath routes, nexthop-ID routes, existing `throw` routes and local-address route types are left out. Table `1892` uses the same routes, with `throw` routes for cached service prefixes except `/0` and `/1`, and for `198.18.0.0/16`. These destinations continue to the later bypass, blocking and main-table rules. A copied route with the same prefix is replaced by the `throw` route; more specific copied routes still win. The watchdog checks both tables on every sync and updates them without flushing them.
 
 Flow offloading: offloaded connections may keep the path they were created with. A mode change, bypass or blocking applies to new connections; existing connections may keep their old path until they end or expire.
 
@@ -293,6 +293,7 @@ Rule and table ownership is recognised by their shape and records in `/var/run` 
 | `block_on_failure` | `0` | During bypass, block traffic to cached service addresses and names. With the watchdog on, installed rules also prevent source-zone traffic to cached non-default service prefixes from falling back to less specific routes after an unexpected process exit |
 | `watchdog_probes` | none | Resources that must accept a connection, as `address[:port]` or `name[:port]`, port 443 if omitted |
 | `watchdog_interval` | `5` | Seconds between checks |
+| `watchdog_sync_interval` | `15` | Seconds between routine syncs of the firewall, DNS and routing rules. A tunnel start, stop or crash, a watchdog state change, a WAN route change or a settings change starts one at once |
 | `watchdog_fails` | `3` | Consecutive failed checks before bypass; an unresponsive tunnel triggers bypass immediately |
 | `watchdog_recover` | `2` | Consecutive successful checks before restoring tunnel routing |
 | `watchdog_timeout` | `12` | Seconds to wait for one address. The fabric reports a failed connection after about 10 seconds, so keep it at 11 or more |

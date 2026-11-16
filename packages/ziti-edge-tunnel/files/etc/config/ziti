@@ -13,6 +13,10 @@ config ziti 'main'
 	# option watchdog_recover '2'
 	# option watchdog_timeout '12'
 	# option watchdog_grace '15'
+	# Seconds between routine syncs of the firewall, DNS and routing rules. A tunnel start,
+	# stop or crash, a watchdog state change, a WAN route change or a settings change starts
+	# one at once.
+	# option watchdog_sync_interval '15'
 	# Each check tries this many random service addresses. One answer from the fabric is
 	# enough, even from a service that is down.
 	# option watchdog_probe_count '3'

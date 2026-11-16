@@ -226,6 +226,9 @@ msgstr "Переопределить задержки перезапуска"
 msgid "Override startup delay"
 msgstr "Переопределить задержку при запуске"
 
+msgid "Override sync interval"
+msgstr "Переопределить интервал сверки"
+
 msgid "Override tunnel response timeout"
 msgstr "Переопределить тайм-аут ответа туннеля"
 
@@ -423,6 +426,9 @@ msgstr "Выберите узлы в зонах источника, которы
 
 msgid "Seconds since the last confirmation before a cached Ziti host entry expires. Default: 3600."
 msgstr "Срок хранения записи об узле Ziti в секундах с последнего подтверждения. По умолчанию: 3600."
+
+msgid "Seconds between routine syncs of the firewall, DNS and routing rules. A tunnel start, stop or crash, a watchdog state change, a WAN route change or a settings change starts one at once. Default: 15."
+msgstr "Пауза в секундах между плановыми сверками межсетевого экрана, DNS и правил маршрутизации. Запуск, остановка или падение туннеля, смена состояния watchdog, смена маршрута WAN или изменение настроек запускают сверку сразу. По умолчанию: 15."
 
 msgid "Seconds after a lookup round finishes before the next round starts. Default: 300."
 msgstr "Пауза в секундах между завершением поиска и началом следующего. По умолчанию: 300."

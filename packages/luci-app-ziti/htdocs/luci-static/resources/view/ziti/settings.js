@@ -188,6 +188,7 @@ return view.extend({
 		var groups = [
 			[ _('Checks'), [
 				[ 'watchdog_interval', _('Override check interval'), _('Pause between checks, in seconds. Default: 5.'), number(1, '5') ],
+				[ 'watchdog_sync_interval', _('Override sync interval'), _('Seconds between routine syncs of the firewall, DNS and routing rules. A tunnel start, stop or crash, a watchdog state change, a WAN route change or a settings change starts one at once. Default: 15.'), number(1, '15') ],
 				[ 'watchdog_fails', _('Override failure threshold'), _('Consecutive failed checks before enabling bypass. An unresponsive tunnel triggers bypass immediately. Default: 3.'), number(1, '3') ],
 				[ 'watchdog_recover', _('Override recovery threshold'), _('Consecutive successful checks before restoring tunnel routing. Default: 2.'), number(1, '2') ],
 				[ 'watchdog_grace', _('Override startup delay'), _('Delay before the first check after the tunnel starts, in seconds. Default: 15.'), number(0, '15') ],
