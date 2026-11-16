@@ -4,6 +4,17 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r26 - 2026-11-15
+
+### Changed
+
+- The watchdog uses less CPU while the tunnel is idle.
+- Routine watchdog checks make fewer writes to flash.
+
+### Fixed
+
+- Turning bypass off could leave an IPv6 route behind and disable tunnel exceptions after a reinstall. Cleanup now deletes this route explicitly.
+
 ## 1.18.7-r25 - 2026-11-08
 
 ### Added

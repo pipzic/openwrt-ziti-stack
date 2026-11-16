@@ -358,6 +358,18 @@ bypass_probe() { ip -N "$1" rule show 2>/dev/null | grep -Eq "^$RULE_PRIORITY:.*
 bypass_ready() { ip "$1" route show table "$TABLE" 2>/dev/null | grep -q '^unreachable default'; }
 bypass_active() { bypass_load; bypass_rule -4 || bypass_rule -6; }
 
+# Removes our terminal route from table $1 in each family where it is all the table holds.
+# ip -6 route flush leaves reject routes behind, so the route is deleted by name.
+terminal_clear() {
+	local fam
+	for fam in -4 -6; do
+		ip "$fam" route show table "$1" 2>/dev/null | sed 's/[[:space:]]*$//' \
+			| awk '/^unreachable default (dev lo )?metric 4294967295( pref medium)?$/ { ok = 1 } END { exit !(ok && NR == 1) }' \
+			&& ip "$fam" route del unreachable default metric 4294967295 table "$1" 2>/dev/null
+	done
+	return 0
+}
+
 # The main table without its expiry counters, which change on every look.
 bypass_source() { ip "$1" route show table main | sed 's/ expires [0-9]*sec//'; }
 
@@ -452,6 +464,7 @@ bypass_off() {
 		return 1
 	fi
 	for fam in -4 -6; do ip "$fam" route flush table "$TABLE" 2>/dev/null; done
+	terminal_clear "$TABLE"
 	rm -f "$BYPASS_FILE" "$BYPASS_FILE.sum"
 	block_names 0
 	log "bypass off"
@@ -486,6 +499,11 @@ block_rules_sync() {
 	local want before
 	want=$(mktemp) || return 0
 	block_rules_want > "$want"
+	# Blocking off, nothing recorded and nothing left to delete: no rules to compare.
+	if [ ! -s "$want" ] && [ ! -s "$BLOCK_RULES" ] && [ ! -e "$BLOCK_RULES.del" ]; then
+		rm -f "$want"
+		return 0
+	fi
 	before=$(cat "$BLOCK_RULES" 2>/dev/null)
 	rules_sync "$BLOCK_RULES" "$want"
 	if [ "$(cat "$BLOCK_RULES" 2>/dev/null)" != "$before" ]; then
@@ -498,12 +516,56 @@ block_rules_sync() {
 	rm -f "$want"
 }
 
+# ---- firewall zones ----
+# fw4 loads the whole firewall model on every call, about 60 ms of CPU on a small router.
+# The watchdog asks it once per pass for each zone and keeps the answers in ZONE_TABLE:
+# "zone device" lines, or "zone" alone for a zone without devices. Other commands ask fw4
+# directly.
+ZONE_TABLE=""
+ZONES_LOADED=0
+
+# Names of the firewall zones: sections of type zone, not every section with a name.
+zone_names() {
+	uci -q show firewall | awk -F= '
+		$2 == "zone" { zone[$1] = 1; next }
+		$1 ~ /\.name$/ { s = $1; sub(/\.name$/, "", s); if (s in zone) { v = $2; gsub(/\047/, "", v); print v } }' \
+		| grep -E '^[A-Za-z0-9_]+$' | sort -u
+}
+
+# Every zone with its devices, from this pass's table or from fw4.
+zone_table() {
+	local z d
+	if [ "$ZONES_LOADED" = 1 ]; then
+		echo "$ZONE_TABLE"
+		return
+	fi
+	for z in $(zone_names); do
+		d=$(fw4 -q zone "$z" 2>/dev/null)
+		if [ -n "$d" ]; then echo "$d" | sed "s/^/$z /"; else echo "$z"; fi
+	done
+}
+
+# Fills the table for this pass. Run in the main shell: a subshell would lose it.
+zones_load() {
+	ZONES_LOADED=0
+	ZONE_TABLE=$(zone_table)
+	ZONES_LOADED=1
+}
+
+# Devices of zone $1 as fw4 prints them. A zone missing from the table is asked directly.
+zone_devices() {
+	if [ "$ZONES_LOADED" = 1 ]; then
+		echo "$ZONE_TABLE" | awk -v z="$1" '$1 == z { f = 1; if (NF > 1) print $2 } END { exit !f }' && return 0
+	fi
+	fw4 -q zone "$1" 2>/dev/null
+}
+
 # Devices of the source zones, for rules that match only the clients' traffic.
 source_devices() {
 	local z
 	for z in $(cfg_zones); do
 		case "$z" in ziti|*[!A-Za-z0-9_]*) continue ;; esac
-		fw4 -q zone "$z" 2>/dev/null
+		zone_devices "$z"
 	done | grep -E '^[A-Za-z0-9_.@-]+$' | sort -u
 }
 
@@ -553,17 +615,47 @@ rules_del() {
 	done
 }
 
+# Lines of file $2 that the kernel snapshot $1 still shows. The kernel always has rules
+# (local, main, default), so an empty snapshot means the read failed: then every line is
+# kept, and no rule leaves the record while it may still be installed.
+rules_still() {
+	if [ -s "$1" ]; then
+		awk 'FILENAME == ARGV[1] { h[$0]; next } $0 in h' "$1" "$2" || cat "$2"
+	else
+		cat "$2"
+	fi
+}
+
 # Brings the kernel to the rules listed in file $2 and records them in $1. Missing rules
 # go in first and are checked; if one fails, only what this attempt added is taken back
 # and the old record stays. Old rules go after that; one that cannot be removed waits in
 # $1.del for the next pass. Returns 0 only when nothing is missing or left over.
 rules_sync() {
-	local state="$1" want have added old fam prio sel fail=0
-	want=$(mktemp) && have=$(mktemp) && added=$(mktemp) && old=$(mktemp) || return 1
+	local state="$1" want have missing added old fam prio sel fail=0
+	want=$(mktemp) && have=$(mktemp) && missing=$(mktemp) && added=$(mktemp) && old=$(mktemp) \
+		|| { rm -f "${want:-}" "${have:-}" "${missing:-}" "${added:-}"; return 1; }
 	rules_canon "$2" | sort -u > "$want"
 	rules_kernel > "$have"
+	# Wanted rules the kernel does not show.
+	if ! awk 'FILENAME == ARGV[1] { h[$0]; next } !($0 in h)' "$have" "$want" > "$missing"; then
+		rm -f "$want" "$have" "$missing" "$added" "$old"
+		return 1
+	fi
+	# Already in place: nothing missing, nothing waiting for deletion, and the record holds
+	# exactly these rules. This path never rewrites the record; a rule the snapshot does not
+	# show takes the full path below.
+	if [ ! -s "$missing" ] && [ ! -e "$state.del" ] \
+		&& { cmp -s "$want" "$state" || { [ ! -s "$want" ] && [ ! -s "$state" ]; }; }; then
+		rm -f "$want" "$have" "$missing" "$added" "$old"
+		return 0
+	fi
+	# Recorded rules that are no longer wanted, worked out before the kernel changes.
+	cat "$state" "$state.del" 2>/dev/null | rules_canon | sort -u > "$old"
+	if ! awk 'FILENAME == ARGV[1] { w[$0]; next } !($0 in w)' "$want" "$old" > "$old.x"; then
+		rm -f "$want" "$have" "$missing" "$added" "$old" "$old.x"
+		return 1
+	fi
 	while read -r fam prio sel; do
-		grep -Fxq -e "$fam $prio $sel" "$have" && continue
 		# shellcheck disable=SC2086
 		if ip "$fam" rule add priority "$prio" $sel 2>/dev/null; then
 			echo "$fam $prio $sel" >> "$added"
@@ -572,25 +664,27 @@ rules_sync() {
 			fail=1
 			break
 		fi
-	done < "$want"
-	rules_kernel > "$have"
-	[ "$fail" = 1 ] || ! grep -Fxv -f "$have" "$want" | grep -q . || fail=1
+	done < "$missing"
+	# The kernel is read again only after it changed.
+	[ -s "$added" ] && rules_kernel > "$have"
+	[ "$fail" = 1 ] || awk 'FILENAME == ARGV[1] { h[$0]; next } !($0 in h) { bad = 1 } END { exit bad }' "$have" "$want" || fail=1
 	if [ "$fail" = 1 ]; then
 		rules_del < "$added"
 		rules_kernel > "$have"
-		grep -Fx -f "$have" "$added" >> "$state.del" 2>/dev/null
+		rules_still "$have" "$added" >> "$state.del"
 		[ -s "$state.del" ] || rm -f "$state.del"
-		rm -f "$want" "$have" "$added" "$old"
+		rm -f "$want" "$have" "$missing" "$added" "$old" "$old.x"
 		return 1
 	fi
-	cat "$state" "$state.del" 2>/dev/null | rules_canon | sort -u > "$old"
-	if [ -s "$want" ]; then grep -Fxv -f "$want" "$old" > "$old.x"; else cp "$old" "$old.x"; fi
-	rules_del < "$old.x"
-	rules_kernel > "$have"
-	grep -Fx -f "$have" "$old.x" > "$state.del" 2>/dev/null
+	# Every recorded rule that is no longer wanted is removed, whatever the snapshot showed.
+	if [ -s "$old.x" ]; then
+		rules_del < "$old.x"
+		rules_kernel > "$have"
+	fi
+	rules_still "$have" "$old.x" > "$state.del"
 	[ -s "$state.del" ] || rm -f "$state.del"
 	if [ -s "$want" ]; then cp "$want" "$state"; else rm -f "$state"; fi
-	rm -f "$want" "$have" "$added" "$old" "$old.x"
+	rm -f "$want" "$have" "$missing" "$added" "$old" "$old.x"
 	[ ! -e "$state.del" ]
 }
 
@@ -673,6 +767,7 @@ alloc_new() {
 		warn "table_taken $u $e" "routing table $u or $e is used by something else: tunnel exceptions are off"
 		return 1
 	fi
+	[ -s "$BYPASS_FILE" ] || terminal_clear "$t"
 	if [ ! -s "$BYPASS_FILE" ] && [ -n "$(ip -4 route show table "$t" 2>/dev/null)$(ip -6 route show table "$t" 2>/dev/null)" ]; then
 		warn "table_taken $t $t" "routing table $t is used by something else: tunnel exceptions are off"
 		return 1
@@ -811,26 +906,24 @@ REPLIES_RELOAD="/var/run/ziti-replies.reload"
 
 # All devices of firewall zones containing an IPv4 default-route device in the snapshot.
 wan_devices() {
-	local devs z zd d
+	local devs
 	devs=$(awk '$1 == "default" { for (i = 2; i < NF; i++) if ($i == "dev") print $(i + 1) }' "$1" | sort -u)
 	[ -n "$devs" ] || return 0
 	[ "$(echo "$devs" | wc -l)" -gt 1 ] && warn "several_wan" "default routes on multiple devices: WAN replies may use a different WAN"
-	for z in $(uci -q show firewall | sed -n "s/^firewall\.[^.]*\.name='\([A-Za-z0-9_]*\)'\$/\1/p"); do
-		zd=$(fw4 -q zone "$z" 2>/dev/null)
-		for d in $devs; do
-			echo "$zd" | grep -Fxq -e "$d" && { echo "$zd"; break; }
-		done
-	done | grep -E '^[A-Za-z0-9_.@+-]+$' | sort -u
+	# shellcheck disable=SC2086
+	zone_table | awk -v devs="$(echo $devs)" '
+		BEGIN { n = split(devs, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+		NF > 1 { dev[$1] = dev[$1] " " $2; if ($2 in want) hit[$1] = 1 }
+		END { for (z in hit) { m = split(dev[z], d, " "); for (i = 1; i <= m; i++) print d[i] } }' \
+		| grep -E '^[A-Za-z0-9_.@+-]+$' | sort -u
 }
 
+# Zones with any of the devices in $1.
 wan_zones() {
-	local z zd d
-	for z in $(uci -q show firewall | sed -n "s/^firewall\.[^.]*\.name='\([A-Za-z0-9_]*\)'\$/\1/p"); do
-		zd=$(fw4 -q zone "$z" 2>/dev/null)
-		for d in $1; do
-			echo "$zd" | grep -Fxq -e "$d" && { echo "$z"; break; }
-		done
-	done | sort -u
+	# shellcheck disable=SC2086
+	zone_table | awk -v devs="$(echo $1)" '
+		BEGIN { n = split(devs, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+		NF > 1 && ($2 in want) { print $1 }' | sort -u
 }
 
 replies_text() {
@@ -864,29 +957,39 @@ replies_live() {
 	[ "$want" = "$live" ]
 }
 
-firewall_reload() { /etc/init.d/firewall reload >/dev/null 2>&1; }
+# A reload can change the zones' devices, so this pass's table is read again.
+firewall_reload() {
+	/etc/init.d/firewall reload >/dev/null 2>&1
+	[ "$ZONES_LOADED" = 1 ] && zones_load
+	return 0
+}
 
 replies_sync() {
-	local m devs="$2" set tmp now last d
+	local m devs="$2" set tmp new now last d
 	m=$(printf '0x%08x' "$(mark_num "$1")")
 	# While WAN is down there is no default route: the devices of the last file stay.
 	[ -n "$devs" ] || devs=$(sed -n 's/.*iifname { \(.*\) } ct mark.*/\1/p' "$REPLIES_NFT" 2>/dev/null | tr -d '",')
 	[ -n "$devs" ] || return 0
 	set=$(for d in $devs; do printf '"%s", ' "$d"; done)
 	set=${set%, }
-	tmp=$(mktemp /etc/ziti/.fw4-replies.XXXXXX) || return 1
-	replies_text "$m" "$set" > "$tmp"
+	# The text is built in RAM; flash is written only when the file has to change.
+	tmp=$(mktemp) || return 1
+	replies_text "$m" "$set" > "$tmp" || { rm -f "$tmp"; return 1; }
 	if ! cmp -s "$tmp" "$REPLIES_NFT"; then
 		if ! { echo "table inet ziti_check {"; cat "$tmp"; echo "}"; } | nft -c -f - >/dev/null 2>&1; then
 			warn "nft_rejected" "the generated firewall rules for replies did not pass nft -c"
 			rm -f "$tmp"
 			return 1
 		fi
-		[ -e "$REPLIES_NFT" ] && cp "$REPLIES_NFT" "$REPLIES_NFT.prev"
-		mv "$tmp" "$REPLIES_NFT"
-	else
-		rm -f "$tmp"
+		# The new file is copied next to the old one, so that the final mv replaces it whole.
+		if { [ -e "$REPLIES_NFT" ] && ! cp "$REPLIES_NFT" "$REPLIES_NFT.prev"; } \
+			|| ! new=$(mktemp /etc/ziti/.fw4-replies.XXXXXX) || ! cp "$tmp" "$new" || ! mv "$new" "$REPLIES_NFT"; then
+			rm -f "$tmp" "${new:-}"
+			log "firewall rules for replies not written"
+			return 1
+		fi
 	fi
+	rm -f "$tmp"
 	if [ "$(uci -q get firewall.$REPLIES_SECTION)" != include ]; then
 		printf '%s\n' "set firewall.$REPLIES_SECTION=include" "set firewall.$REPLIES_SECTION.type='nftables'" \
 			"set firewall.$REPLIES_SECTION.path='$REPLIES_NFT'" "set firewall.$REPLIES_SECTION.position='table-post'" \
@@ -1157,8 +1260,8 @@ fabric_prune() {
 	mv "$tmp" "$FABRIC_HOSTS"
 }
 
-# Takes a finished result of the current snapshot into the host list, prunes it, and
-# starts the next batch when one is due.
+# Takes a finished result of the current snapshot into the host list and starts the next
+# batch when one is due. The list was pruned before the rules were built.
 fabric_tick() {
 	local snap="$1" gen now cur_gen cursor complete due tmp
 	now=$(date +%s)
@@ -1188,7 +1291,6 @@ fabric_tick() {
 		fi
 		rm -f "$FABRIC_RESULT"
 	fi
-	fabric_prune "$snap"
 	echo "$gen ${cursor:-0} ${complete:-0} ${due:-0}" > "$FABRIC_STATE"
 	if ! fabric_worker_alive && { [ "${complete:-0}" != 1 ] || [ "$now" -ge "${due:-0}" ]; }; then
 		# A lock left by a worker that died is taken over.
@@ -1235,9 +1337,10 @@ direct_sources() {
 	} | sort -u
 }
 
+# Sources that send only services through the tunnel; $1 is the list of direct_sources,
+# which win where both match.
 services_sources() {
-	local s direct
-	direct=$(direct_sources)
+	local s direct="$1"
 	for s in $(cfg_list services_sources ""); do valid_source "$s"; done | sort -u | while read -r s; do
 		echo "$direct" | grep -Fxq "$s" || echo "$s"
 	done
@@ -1257,19 +1360,20 @@ router_destinations() {
 }
 
 policy_rules_want() {
-	local p="$A_PRIO" u="$A_UTABLE" e="$A_ETABLE" m dev s d devs
+	local p="$A_PRIO" u="$A_UTABLE" e="$A_ETABLE" m dev s d devs direct
 	m=$(printf '0x%x' $((A_MARK)))
 	devs=$(source_devices)
+	direct=$(direct_sources)
 	echo "-4 $((p - 6)) oif ziti0 lookup main"
 	echo "-4 $((p - 5)) fwmark $m/$m lookup $u"
 	for d in $(router_destinations "$1"); do echo "-4 $((p - 4)) to $d iif lo lookup $u"; done
-	for s in $(direct_sources); do
+	for s in $direct; do
 		for dev in $devs; do
 			echo "-4 $((p - 3)) from $s to $DNS_NET iif $dev unreachable"
 			echo "-4 $((p - 2)) from $s iif $dev lookup $u"
 		done
 	done
-	for s in $(services_sources); do
+	for s in $(services_sources "$direct"); do
 		for dev in $devs; do echo "-4 $((p - 1)) from $s iif $dev lookup $e"; done
 	done
 }
@@ -1622,6 +1726,7 @@ cmd_watchdog() {
 		interval=$(cfg_num watchdog_interval 5)
 		fails=$(cfg_num watchdog_fails 3)
 		recover=$(cfg_num watchdog_recover 2)
+		zones_load
 		fabric_dns_sync
 		firewall_sync
 		# Service prefixes first: the exception tables and the blocking rules are built from them.
@@ -1685,7 +1790,7 @@ cmd_watchdog() {
 				esac
 			fi
 			# The WAN gateway can change while the bypass is on.
-			bypass_active && [ "$health" != healthy ] && bypass_on "$health"
+			[ "$health" != healthy ] && bypass_active && bypass_on "$health"
 		fi
 		[ "$STOP" = 0 ] && sleep "$interval"
 	done
@@ -1836,7 +1941,7 @@ set firewall.$s.dest='ziti'
 	done
 	[ -n "$batch" ] || return 0
 	printf '%scommit firewall\n' "$batch" | uci -q batch
-	/etc/init.d/firewall reload >/dev/null 2>&1
+	firewall_reload
 	log "forwarding into ziti from zones: $(own_forwardings | sed "s/^$FORWARDING//" | tr '\n' ' ')"
 }
 
@@ -1882,7 +1987,12 @@ cmd_uninstall() {
 		kill -9 $pids 2>/dev/null
 		sleep 1
 	fi
-	bypass_off
+	# A terminal route left from an earlier bypass would make the next install see the table
+	# as taken. It is cleared only once no bypass rule selects the table.
+	if bypass_off; then
+		bypass_load
+		terminal_clear "$TABLE"
+	fi
 	rules_clear "$BLOCK_RULES"
 	exceptions_clear
 	# What the exact deletions left behind, at the priorities the allocation checked as free.
@@ -1898,7 +2008,7 @@ cmd_uninstall() {
 		echo "commit firewall"
 	} | uci -q batch
 	/etc/init.d/firewall reload >/dev/null 2>&1
-	rm -f "$SERVICE_NAMES" "$SERVICE_PREFIXES" "$PROBE_POOL" "$PROBE_POOL.sum" "$FABRIC_NAMES"
+	rm -f "$SERVICE_NAMES" "$SERVICE_PREFIXES" "$PROBE_POOL" "$PROBE_POOL.sum" "$FABRIC_NAMES" /etc/ziti/.fw4-replies.*
 }
 
 # For a look at what the watchdog would check. A status file stands in for the live tunnel.
