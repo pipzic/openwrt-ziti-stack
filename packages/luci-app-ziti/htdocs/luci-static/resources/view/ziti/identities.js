@@ -140,12 +140,13 @@ return view.extend({
 				E('td', { 'class': 'td' }, it.name),
 				E('td', { 'class': 'td' }, it.controller || '-'),
 				E('td', { 'class': 'td' }, E('span', { 'class': it.status == 'active' ? 'label success' : 'label warning' }, statusLabel(it.status))),
+				// The button names the action: red Disable while on, plain Enable while off.
 				E('td', { 'class': 'td' }, E('button', {
-					'class': 'btn cbi-button cbi-button-' + (it.enabled ? 'positive' : 'negative'),
+					'class': 'btn cbi-button' + (it.enabled ? ' cbi-button-negative' : ''),
 					'click': ui.createHandlerFn(this, function () {
 						return reloadOn(callSetIdentity(it.id, !it.enabled), _('Failed: %s'));
 					})
-				}, it.enabled ? _('Enabled') : _('Disabled'))),
+				}, it.enabled ? _('Disable') : _('Enable'))),
 				E('td', { 'class': 'td' }, E('button', {
 					'class': 'btn cbi-button cbi-button-remove',
 					'click': ui.createHandlerFn(this, remove, it.id, it.name)

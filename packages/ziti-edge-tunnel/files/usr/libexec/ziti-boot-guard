@@ -283,10 +283,11 @@ fabric_dns_off() {
 
 # ---- service names ----
 # Kept on flash: blocking must still work after a reboot with a dead controller.
+# Only services this router dials: names it hosts are not intercepted here.
 remember_service_names() {
 	local tmp
 	tmp=$(mktemp) || return 0
-	jsonfilter -i "$1" -e '@.Data.Identities[*].Services[*].Addresses[@.IsHost=true].HostName' 2>/dev/null \
+	jsonfilter -i "$1" -e '@.Data.Identities[*].Services[@.Permissions.Dial=true].Addresses[@.IsHost=true].HostName' 2>/dev/null \
 		| sed 's/^\*\.//' | sort -u > "$tmp"
 	if cmp -s "$tmp" "$SERVICE_NAMES"; then rm -f "$tmp"; else mv "$tmp" "$SERVICE_NAMES"; fi
 }
@@ -845,10 +846,14 @@ table_sync() {
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
 		grep -Fxq -e "$r" "$have" && continue
-		# add keeps IPv6 routes that share a prefix on several devices; replace changes
-		# a route whose attributes differ.
+		# IPv6 refuses to add a device route whose prefix and metric another one in the table
+		# already has, as fe80::/64 on several devices; append keeps both. Routes with a
+		# gateway are not appended: that would merge them into one multipath route. replace
+		# changes a route whose attributes differ. A stale copy left by append is deleted below.
 		# shellcheck disable=SC2086
-		ip "$fam" route add table "$t" $r 2>/dev/null || ip "$fam" route replace table "$t" $r 2>/dev/null \
+		ip "$fam" route add table "$t" $r 2>/dev/null \
+			|| { [ "$fam" = -6 ] && [ "${r#* via }" = "$r" ] && ip -6 route append table "$t" $r 2>/dev/null; } \
+			|| ip "$fam" route replace table "$t" $r 2>/dev/null \
 			|| { log "route not copied to table $t: $r"; fail=1; }
 	done < "$want"
 	table_routes "$fam" "$t" > "$have"
@@ -1469,12 +1474,13 @@ first_host() {
 
 # Every address worth checking, one "address port" per line, TCP only: UDP confirms
 # nothing. Names stay names until picked. Parsing costs several processes per address,
-# so the result is kept until the services change.
+# so the result is kept until the services change. Only services this router dials:
+# the ones it hosts have no tunnel routes here.
 refresh_probe_pool() {
 	local status="$1" sum svc low high port addr host ip prefix i
-	sum=$(jsonfilter -i "$status" -e '@.Data.Identities[@.Active=true].Services[*]' 2>/dev/null | sort | md5sum)
+	sum=$(jsonfilter -i "$status" -e '@.Data.Identities[@.Active=true].Services[@.Permissions.Dial=true]' 2>/dev/null | sort | md5sum)
 	[ -e "$PROBE_POOL" ] && [ "$sum" = "$(cat "$PROBE_POOL.sum" 2>/dev/null)" ] && return 0
-	jsonfilter -i "$status" -e '@.Data.Identities[@.Active=true].Services[*]' 2>/dev/null | while IFS= read -r svc; do
+	jsonfilter -i "$status" -e '@.Data.Identities[@.Active=true].Services[@.Permissions.Dial=true]' 2>/dev/null | while IFS= read -r svc; do
 		printf '%s' "$svc" | jsonfilter -e '@.Protocols[*]' | grep -qx tcp || continue
 		low=$(printf '%s' "$svc" | jsonfilter -e '@.Ports[0].Low')
 		high=$(printf '%s' "$svc" | jsonfilter -e '@.Ports[0].High')
@@ -1655,6 +1661,8 @@ tunnel_health() {
 	rm -f "$status" "$dump"
 	# Addresses set by hand stand for a resource that must work, so only a real answer counts.
 	[ -n "$(explicit_targets)" ] && strict=1
+	# No targets, as on a router that only hosts services: authentication and the router
+	# connection checked above are the whole check.
 	targets=$(probe_targets)
 	if [ -n "$targets" ]; then
 		r=$(echo "$targets" | probe_all)

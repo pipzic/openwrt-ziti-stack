@@ -4,6 +4,17 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r28 - 2026-11-17
+
+### Changed
+
+- The identity and Start at boot buttons in LuCI name the action: a red Disable while on, a plain Enable while off.
+
+### Fixed
+
+- On a router that only hosts services, the watchdog probed the hosted services, found no tunnel routes for them and turned bypass on. It then restarted the tunnel every 30 minutes and dropped hosted connections. Probes and service names now come only from services the router dials.
+- While bypass was on, the IPv6 bypass table could never match the main table when several devices had a route with the same prefix and metric, such as `fe80::/64`. The watchdog logged "bypass not complete; trying again" on every check. Such device routes are now appended.
+
 ## 1.18.7-r27 - 2026-11-16
 
 ### Added

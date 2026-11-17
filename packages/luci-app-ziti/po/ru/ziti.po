@@ -82,8 +82,14 @@ msgstr "Задержки перед попытками перезапуска в
 msgid "Delete identity %q? This cannot be undone."
 msgstr "Удалить identity %q? Это действие необратимо."
 
+msgid "Disable"
+msgstr "Выключить"
+
 msgid "Disabled"
 msgstr "Отключено"
+
+msgid "Enable"
+msgstr "Включить"
 
 msgid "Enable watchdog"
 msgstr "Включить watchdog"

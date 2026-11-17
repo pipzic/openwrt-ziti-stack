@@ -118,10 +118,11 @@ return view.extend({
 					data.running ? _('running') : _('stopped'))),
 				row(_('State'), stateLabel(data.state)),
 				row(_('Version'), data.version || _('unknown')),
+				// The button names the action, as on the identities page.
 				row(_('Start at boot'), E('button', {
-					'class': 'btn cbi-button cbi-button-' + (data.autostart ? 'positive' : 'negative'),
+					'class': 'btn cbi-button' + (data.autostart ? ' cbi-button-negative' : ''),
 					'click': ui.createHandlerFn(this, function () { return finish(callSetAutostart(!data.autostart)); })
-				}, data.autostart ? _('Enabled') : _('Disabled'))),
+				}, data.autostart ? _('Disable') : _('Enable'))),
 				row(_('Control'), [
 					actionButton(_('Start'), 'start', 'action'), ' ',
 					actionButton(_('Stop'), 'stop', 'negative'), ' ',
