@@ -1312,8 +1312,8 @@ fabric_tick() {
 
 # ---- tunnel exceptions ----
 # Rules before the bypass rule P: direct_sources, services_sources, marked replies
-# to connections from WAN, and the router's own traffic to classified fabric
-# addresses and their IPv4 DNS servers.
+# to connections from WAN, the router's own traffic to classified fabric addresses
+# and their IPv4 DNS servers, and the rest of the router's own traffic.
 
 # IPv4 address or subnet, /32 dropped; nothing for a value that cannot be a client.
 valid_source() {
@@ -1382,6 +1382,12 @@ policy_rules_want() {
 	for s in $(services_sources "$direct"); do
 		for dev in $devs; do echo "-4 $((p - 1)) from $s iif $dev lookup $e"; done
 	done
+	# The router's own traffic, the tunneler's connections for hosted services included,
+	# sends only services through the tunnel: a full tunnel carries the source zones only.
+	# Only with a default route in E: a default this table cannot copy, such as a multipath
+	# or nexthop-object route, would leave the router with no way out at all.
+	ip -4 route show table "$e" 2>/dev/null | grep -q '^default ' && echo "-4 $((p - 1)) iif lo lookup $e"
+	return 0
 }
 
 POLICY_RULES="/var/run/ziti-policy-rules"

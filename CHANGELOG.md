@@ -4,6 +4,12 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r29 - 2026-11-17
+
+### Changed
+
+- The router's own traffic uses the tunnel only for services. A full tunnel (`0.0.0.0/1` and `128.0.0.0/1`) now carries only the source zones: the router's internet traffic, including the tunneler's connections for services the router hosts, goes directly. A router that hosts an exit and sends its LAN through another exit no longer chains the two.
+
 ## 1.18.7-r28 - 2026-11-17
 
 ### Changed
