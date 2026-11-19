@@ -271,6 +271,8 @@ UCI changes are batched but are not transactional, so forced termination by proc
 
 The tunneler is built to write its own resolver line only to `/var/run/ziti-edge-tunnel/resolv.conf`. It does not edit `/etc/resolv.conf`, although its log message still names that file.
 
+The tunneler is also built to log through syslog, so `logread` and LuCI show each line with its own priority: `daemon.info`, `daemon.warn` or `daemon.err`. The lines that every watchdog check produces, such as the state dump and the probe's name lookup, are logged at DEBUG.
+
 A DNS server that is reachable only through the tunnel works like any other address of a service: add a forwarding rule for its domain under Forwards, and make sure a service intercepts its address. It answers only while the tunnel is healthy.
 
 DNS servers bound with `@interface` or `@source` are not used for fabric lookups, and no warning is shown.

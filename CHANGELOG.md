@@ -4,6 +4,13 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r30 - 2026-11-19
+
+### Changed
+
+- The tunneler logs through syslog, so each line keeps its own priority in `logread` and LuCI: `daemon.info` for INFO, `daemon.warn` for WARN, `daemon.err` for ERROR. Before, procd logged everything the tunneler wrote to stderr as `daemon.err`.
+- Lines that every watchdog check produced are logged at DEBUG: "ziti dump started" and "ziti dump finished", "found record" for a resolved service name, and "inbound data on closed connection" after a probe. At the default INFO level they filled most of the log buffer: on a router with one dialed service, about 80% of the lines.
+
 ## 1.18.7-r29 - 2026-11-17
 
 ### Changed

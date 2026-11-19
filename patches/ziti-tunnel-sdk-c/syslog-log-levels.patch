@@ -1,0 +1,61 @@
+--- a/programs/ziti-edge-tunnel/ziti-edge-tunnel.c
++++ b/programs/ziti-edge-tunnel/ziti-edge-tunnel.c
+@@ -80,6 +80,18 @@
+ void ziti_log_writer(int , const char *, const char *, size_t);
+ char* get_log_file_name();
+ #include <stdint.h>
++#endif
++
++#if !defined(_WIN32)
++#include <syslog.h>
++
++// procd logs all of stderr as err; syslog keeps each line's own priority.
++static void syslog_log_writer(int level, const char *loc, const char *msg, size_t msglen) {
++    static const char *const labels[] = { "NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE", "TRACE" };
++    static const int priorities[] = { LOG_ERR, LOG_ERR, LOG_WARNING, LOG_INFO, LOG_DEBUG, LOG_DEBUG, LOG_DEBUG };
++    int i = (level >= 0 && level < (int) (sizeof(labels) / sizeof(labels[0]))) ? level : 6;
++    syslog(priorities[i], "%7s %s %.*s", labels[i], loc, (int) msglen, msg);
++}
+ #endif
+ 
+ static int dns_miss_status = DNS_REFUSE;
+@@ -1683,6 +1695,8 @@
+     log_init(global_loop_ref, log_level, ziti_log_writer); // level from config file set below
+     log_fn = ziti_log_writer;
+ #else
++    openlog("ziti-edge-tunnel", LOG_PID, LOG_DAEMON);
++    log_fn = syslog_log_writer;
+     ziti_log_init(global_loop_ref, log_level, log_fn);
+ #endif
+ 
+--- a/lib/ziti-tunnel-cbs/ziti_tunnel_ctrl.c
++++ b/lib/ziti-tunnel-cbs/ziti_tunnel_ctrl.c
+@@ -335,7 +335,7 @@
+             #ifndef MAXPATHLEN
+             #define MAXPATHLEN 1024
+             #endif
+-            ZITI_LOG(INFO, "ziti dump started ");
++            ZITI_LOG(DEBUG, "ziti dump started ");
+             tunnel_ziti_dump dump = {0};
+             if (cmd->data != NULL && parse_tunnel_ziti_dump(&dump, cmd->data, strlen(cmd->data)) < 0) {
+                 result.success = false;
+@@ -395,7 +395,7 @@
+                 result.error = errorMsg;
+                 ZITI_LOG(WARN, "%s", result.error);
+             }
+-            ZITI_LOG(INFO, "ziti dump finished ");
++            ZITI_LOG(DEBUG, "ziti dump finished ");
+             free_tunnel_ziti_dump(&dump);
+             break;
+         }
+--- a/lib/ziti-tunnel-cbs/ziti_dns.c
++++ b/lib/ziti-tunnel-cbs/ziti_dns.c
+@@ -563,7 +563,7 @@
+             *rp++ = 0xc0;
+             *rp++ = 0x0c;
+ 
+-            ZITI_LOG(INFO, "found record[%s] for query[%d:%s]", a->data,
++            ZITI_LOG(DEBUG, "found record[%s] for query[%d:%s]", a->data,
+                      (int)req->msg.question[0]->type, req->msg.question[0]->name);
+ 
+             SET_U16(rp, a->type);

@@ -1,0 +1,11 @@
+--- a/library/connect.c
++++ b/library/connect.c
+@@ -968,7 +968,7 @@
+ 
+ void conn_inbound_data_msg(ziti_connection conn, message *msg) {
+     if (conn->state >= Disconnected || conn->fin_recv) {
+-        CONN_LOG(WARN, "inbound data on closed connection");
++        CONN_LOG(DEBUG, "inbound data on closed connection");
+         return;
+     }
+ 

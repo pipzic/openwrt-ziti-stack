@@ -66,6 +66,8 @@ start_service() {
 		--dns-ip-range "$DNS_RANGE" \
 		--verbose "$(verbosity_for "$log_level")"
 	procd_set_param respawn 3600 5 0
+	# ZET logs through syslog with each line's priority; this keeps only what it
+	# prints before its logger starts, such as a crash on startup.
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
