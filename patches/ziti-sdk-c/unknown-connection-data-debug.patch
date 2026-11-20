@@ -1,0 +1,19 @@
+--- a/library/channel.c
++++ b/library/channel.c
+@@ -684,8 +684,14 @@
+                 ziti_channel_send_message(ch, reply, NULL);
+             } else if (ct != ContentTypeStateClosed) {
+                 // close confirmation is OK if connection is gone already
+-                CH_LOG(WARN, "received message without conn_id or for unknown connection ct[%s] conn_id[%d]",
+-                       content_type_id(ct), conn_id);
++                // and so is data still in flight when the connection closed
++                if (has_conn_id && ct == ContentTypeData) {
++                    CH_LOG(DEBUG, "received message without conn_id or for unknown connection ct[%s] conn_id[%d]",
++                           content_type_id(ct), conn_id);
++                } else {
++                    CH_LOG(WARN, "received message without conn_id or for unknown connection ct[%s] conn_id[%d]",
++                           content_type_id(ct), conn_id);
++                }
+                 // notify ER that this connection is not available
+                 ch_send_conn_closed(ch, conn_id);
+             }

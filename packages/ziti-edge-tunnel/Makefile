@@ -100,8 +100,9 @@ TARGET_CFLAGS += \
 # runs. It re-exports OpenWRT's libsodium under the "unofficial-sodium"
 # CMake target name that ziti-sdk-c expects.
 # The logging patches send ZET's log to syslog with each line's own priority
-# (procd logs all of stderr as err) and move the lines that every watchdog check
-# produces to DEBUG. The SDK source exists only after cmake fetched it.
+# (procd logs all of stderr as err) and move to DEBUG the lines that every watchdog
+# check produces and the data that arrives after a connection closed. The SDK
+# source exists only after cmake fetched it.
 # A configure run that failed leaves its patches applied; a retry accepts a patch
 # only if all of it is already there, and otherwise applies it. The check uses
 # --force: --batch would take an unapplied patch for a reversed one and pass.
@@ -119,6 +120,9 @@ define Build/Configure
 	$(call ziti_apply_patch,$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src,/opt/openwrt-ziti-stack/patches/ziti-sdk-c/closed-connection-debug.patch)
 	grep -Fqx '        CONN_LOG(DEBUG, "inbound data on closed connection");' \
 		$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/connect.c
+	$(call ziti_apply_patch,$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src,/opt/openwrt-ziti-stack/patches/ziti-sdk-c/unknown-connection-data-debug.patch)
+	grep -Fqx '                if (has_conn_id && ct == ContentTypeData) {' \
+		$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/channel.c
 	test -f $(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c
 	grep -Fxc '    uv_thread_setname("zitilib-daemon");' $(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c | grep -qx '1'
 	$(call ziti_apply_patch,$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src,/opt/openwrt-ziti-stack/patches/ziti-sdk-c/libuv-before-1.50.patch)

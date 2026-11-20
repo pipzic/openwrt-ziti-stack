@@ -4,6 +4,12 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r31 - 2026-11-20
+
+### Changed
+
+- "received message without conn_id or for unknown connection ct[DataType]" is logged at DEBUG when the message carries a connection ID. It means data arrived after the connection had closed, which is normal at teardown, and the tunneler still tells the router that the connection is gone. On a router with a few services it was over 100 WARN lines an hour. The same message for other content types, or without a connection ID, stays at WARN.
+
 ## 1.18.7-r30 - 2026-11-19
 
 ### Changed
