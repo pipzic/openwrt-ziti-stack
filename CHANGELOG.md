@@ -4,6 +4,12 @@ Package versions are `<ziti-edge-tunnel version>-r<PACKAGE_RELEASE>`, for exampl
 
 Releases r6 to r21 were test builds and were not published. r22 is the first published release after r5. Each entry lists what changed since the build before it.
 
+## 1.18.7-r32 - 2026-11-24
+
+### Changed
+
+- HTTP connections for controller, authentication and enrollment requests give up after 15 seconds when sent data is not acknowledged (`TCP_USER_TIMEOUT`). When a network path starts dropping a connection's packets without closing it, a request used to hang until the kernel gave up, about 16 minutes, and the tunneler re-authenticated afterwards and dropped all router connections. Now the request fails in about 15 seconds and the tunneler's usual retry and controller selection take over, so full recovery can take longer. Slow responses over a healthy connection are not affected.
+
 ## 1.18.7-r31 - 2026-11-20
 
 ### Changed

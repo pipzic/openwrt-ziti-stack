@@ -103,6 +103,9 @@ TARGET_CFLAGS += \
 # (procd logs all of stderr as err) and move to DEBUG the lines that every watchdog
 # check produces and the data that arrives after a connection closed. The SDK
 # source exists only after cmake fetched it.
+# The tlsuv patch sets TCP_USER_TIMEOUT (15s) on controller API connections: a path
+# that silently drops packets mid-connection otherwise holds a request until the
+# kernel gives up (~16 min), and the SDK only fails over on a transport error.
 # A configure run that failed leaves its patches applied; a retry accepts a patch
 # only if all of it is already there, and otherwise applies it. The check uses
 # --force: --batch would take an unapplied patch for a reversed one and pass.
@@ -130,6 +133,10 @@ define Build/Configure
 		$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c
 	grep -Fqx '#endif /* libuv >= 1.50.0 */' \
 		$(PKG_BUILD_DIR)/_deps/ziti-sdk-c-src/library/zitilib/daemon.c
+	test -f $(PKG_BUILD_DIR)/_deps/tlsuv-src/src/http.c
+	$(call ziti_apply_patch,$(PKG_BUILD_DIR)/_deps/tlsuv-src,/opt/openwrt-ziti-stack/patches/tlsuv/controller-user-timeout.patch)
+	grep -Fqx '        setsockopt(sock, IPPROTO_TCP, TCP_USER_TIMEOUT, (const void *) &user_timeout_ms, sizeof(user_timeout_ms));' \
+		$(PKG_BUILD_DIR)/_deps/tlsuv-src/src/http.c
 endef
 
 # The upstream tree installs the binary as ziti-edge-tunnel under bin/.

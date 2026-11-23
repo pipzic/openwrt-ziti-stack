@@ -273,6 +273,8 @@ The tunneler is built to write its own resolver line only to `/var/run/ziti-edge
 
 The tunneler is also built to log through syslog, so `logread` and LuCI show each line with its own priority: `daemon.info`, `daemon.warn` or `daemon.err`. The lines that every watchdog check produces, such as the state dump and the probe's name lookup, are logged at DEBUG, as is data that arrives for a connection that has already closed.
 
+HTTP connections for controller, authentication and enrollment requests are also built to give up after 15 seconds when sent data is not acknowledged (`TCP_USER_TIMEOUT`). A network path that silently drops a connection's packets then fails a request in about 15 seconds instead of about 16 minutes; the tunneler's usual retry and controller selection decide what happens next. Slow responses over a healthy connection are not affected.
+
 A DNS server that is reachable only through the tunnel works like any other address of a service: add a forwarding rule for its domain under Forwards, and make sure a service intercepts its address. It answers only while the tunnel is healthy.
 
 DNS servers bound with `@interface` or `@source` are not used for fabric lookups, and no warning is shown.
